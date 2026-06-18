@@ -28,6 +28,14 @@ export interface PolicyContext {
   subjectRole: Role
   document:    DocumentPolicy
   requestedAt: Date
+  // Audit-grade replay provenance for the governing decision. Stamped onto any
+  // governance event (e.g. a legal-hold audit lock) so it proves *why* it fired.
+  provenance?: {
+    authoritySnapshotId?: string
+    policyVersion?:       string
+    boundaryHash?:        string
+    ruleVersion?:         string
+  }
 }
 
 export type PolicyGate = 'retention' | 'legal_hold' | 'role_permission' | 'effective_date'

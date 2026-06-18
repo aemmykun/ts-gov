@@ -307,6 +307,21 @@ describe('Layer 2 — PolicyEngine (full 4-gate sequence)', () => {
     expect(result.auditLocked).toBe(true)
   })
 
+  test('legal-hold audit lock records authority provenance (why)', async () => {
+    const audit  = new AuditLockService()
+    const engine = new PolicyEngine(audit)
+    const provenance = {
+      authoritySnapshotId: 'asg-7@v3',
+      policyVersion:       '4.2.0',
+      boundaryHash:        'b'.repeat(64),
+      ruleVersion:         '4.1',
+    }
+    await engine.evaluate({ ...ctx({ legalHold: true }), provenance })
+    const locks = audit.list()
+    expect(locks).toHaveLength(1)
+    expect(locks[0]).toMatchObject({ documentId: 'doc-001', tenantId: 'tenant-A', ...provenance })
+  })
+
   test('stops at gate 3 (role)', async () => {
     const viewerCtx: PolicyContext = { ...ctx(), subjectRole: 'viewer' }
     const result    = await engine.evaluate(viewerCtx)

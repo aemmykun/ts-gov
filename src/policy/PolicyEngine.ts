@@ -40,6 +40,7 @@ export class PolicyEngine {
             ctx.document.documentId,
             ctx.document.tenantId,
             result.reason ?? 'legal hold',
+            ctx.provenance ?? {},
           )
         }
         return result
