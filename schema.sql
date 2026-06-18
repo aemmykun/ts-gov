@@ -148,9 +148,86 @@ create table if not exists evidence_ledger (
   response_hash text,
   previous_hash text,
   current_hash text not null,
+  authority_snapshot_id text,
+  policy_version text,
+  boundary_hash text,
   data_json jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   primary key (tenant_id, id)
+);
+
+-- ── Governance replay primitives (persist "why was this allowed/denied?") ────
+-- These make authoritySnapshotId / policyVersion / boundaryHash first-class
+-- relational entities rather than values embedded only in evidence blocks.
+
+-- Immutable, published policy sets. Mirrors TS policyVersion + computePolicyChecksum().
+create table if not exists policy_versions (
+  tenant_id uuid not null,
+  id uuid not null default gen_random_uuid(),
+  version text not null,
+  checksum text not null,
+  published_at timestamptz not null default now(),
+  published_by uuid,
+  primary key (tenant_id, id),
+  unique (tenant_id, version)
+);
+
+-- Resolved DAR authority, addressable by its deterministic snapshot hash.
+-- Mirrors TS EvidenceBoundary.authoritySnapshotId / policyVersion / boundaryHash.
+create table if not exists authority_snapshots (
+  tenant_id uuid not null,
+  id uuid not null default gen_random_uuid(),
+  snapshot_id text not null,
+  user_id uuid not null references users(id),
+  policy_version text not null,
+  boundary_hash text not null,
+  boundary_json jsonb not null,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, id),
+  unique (tenant_id, snapshot_id)
+);
+
+-- One row per dar.resolve(): the boundary that would otherwise vanish after use.
+create table if not exists dar_decisions (
+  tenant_id uuid not null,
+  id uuid not null default gen_random_uuid(),
+  request_id uuid not null,
+  user_id uuid not null references users(id),
+  authority_snapshot_id text not null,
+  boundary_hash text not null,
+  policy_version text not null,
+  decision text not null check (decision in ('ALLOW', 'DENY')),
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, id)
+);
+
+-- Legal-hold lock events, stamped with the governance state that raised them.
+create table if not exists audit_locks (
+  tenant_id uuid not null,
+  id uuid not null default gen_random_uuid(),
+  resource_id uuid not null,
+  reason text not null,
+  authority_snapshot_id text,
+  policy_version text,
+  boundary_hash text,
+  locked_at timestamptz not null default now(),
+  primary key (tenant_id, id)
+);
+
+-- Evidence-integrity manifests (source/chunk hashes + HMAC signature + custody).
+create table if not exists handoff_manifests (
+  tenant_id uuid not null,
+  id uuid not null default gen_random_uuid(),
+  source_id uuid not null,
+  source_hash text not null,
+  chunk_hash text not null,
+  signature text not null,
+  key_id text not null,
+  ingestion_audit jsonb not null default '{}'::jsonb,
+  chain_of_custody jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  primary key (tenant_id, id),
+  foreign key (tenant_id, source_id) references rag_sources(tenant_id, id)
 );
 
 -- ── Row-Level Security (primary tenant-isolation control) ───────────────────
@@ -169,6 +246,11 @@ alter table retention_policies enable row level security;
 alter table rag_sources      enable row level security;
 alter table rag_chunks       enable row level security;
 alter table evidence_ledger  enable row level security;
+alter table policy_versions     enable row level security;
+alter table authority_snapshots enable row level security;
+alter table dar_decisions       enable row level security;
+alter table audit_locks         enable row level security;
+alter table handoff_manifests   enable row level security;
 
 alter table families         force row level security;
 alter table children         force row level security;
@@ -179,6 +261,11 @@ alter table retention_policies force row level security;
 alter table rag_sources      force row level security;
 alter table rag_chunks       force row level security;
 alter table evidence_ledger  force row level security;
+alter table policy_versions     force row level security;
+alter table authority_snapshots force row level security;
+alter table dar_decisions       force row level security;
+alter table audit_locks         force row level security;
+alter table handoff_manifests   force row level security;
 
 -- Plain tenant isolation: row.tenant_id must equal the request's app.tenant_id.
 create policy families_tenant_isolation on families
@@ -237,6 +324,26 @@ create policy rag_chunks_boundary_isolation on rag_chunks
   with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
 
 create policy evidence_ledger_tenant_isolation on evidence_ledger
+  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+create policy policy_versions_tenant_isolation on policy_versions
+  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+create policy authority_snapshots_tenant_isolation on authority_snapshots
+  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+create policy dar_decisions_tenant_isolation on dar_decisions
+  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+create policy audit_locks_tenant_isolation on audit_locks
+  using (tenant_id = current_setting('app.tenant_id', true)::uuid)
+  with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
+
+create policy handoff_manifests_tenant_isolation on handoff_manifests
   using (tenant_id = current_setting('app.tenant_id', true)::uuid)
   with check (tenant_id = current_setting('app.tenant_id', true)::uuid);
 
