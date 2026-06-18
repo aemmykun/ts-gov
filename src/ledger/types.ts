@@ -67,4 +67,11 @@ export interface ReplayResult {
   chainIntegrity: 'valid' | 'broken'
   recomputedChecksum: string
   storedChecksum:     string
+  // Authority evidence — lets a replay answer "why was this allowed?", not just
+  // "what happened?". null for legacy blocks committed without provenance.
+  authority: {
+    authoritySnapshotId: string
+    policyVersion:       string
+    boundaryHash:        string
+  } | null
 }

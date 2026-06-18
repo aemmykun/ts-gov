@@ -90,6 +90,15 @@ retrieval via an injected `PolicyDecisionProvider`, and every ledger block is
 stamped with `authoritySnapshotId` + `policyVersion` + a `boundaryHash` (bound
 into the tamper-evident checksum) so any decision is reproducible years later.
 
+## Governance replay (why, not just what)
+
+`replayBlock()` returns the block's `authority` evidence
+(`authoritySnapshotId` + `policyVersion` + `boundaryHash`) alongside the
+recomputed checksum — so a replay answers **"why was this allowed?"**, not just
+**"what happened / was it altered?"**. `verifyFromGenesis(tenantId,
+expectedGenesisChecksum?)` proves the entire chain from block 1 with no gaps,
+optionally pinned to an externally-attested genesis checksum.
+
 ```ts
 interface EvidenceBoundary {
   tenantIds: string[]; organisationIds: string[]; scopeIds: string[]

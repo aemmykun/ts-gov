@@ -20,6 +20,9 @@ export class ReplayEngine {
       chainIntegrity,
       recomputedChecksum: recomputed,
       storedChecksum:     block.auditTrail.blockChecksum,
+      // Surface the authority provenance so the replay proves *why* the decision
+      // was permitted, not merely that the record is intact.
+      authority:          block.authority ?? null,
     }
   }
 

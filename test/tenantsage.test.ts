@@ -438,6 +438,42 @@ describe('Layer 4 — EvidenceLedger + ChainVerifier', () => {
     await expect(ledger.replayBlock('tenant-A', 99)).rejects.toThrow('REPLAY')
   })
 
+  test('replay surfaces authority evidence (why), not just what happened', async () => {
+    await ledger.commit({
+      ...baseCommit,
+      authoritySnapshotId: 'asg-9@v2',
+      policyVersion:       '4.2.0',
+      boundaryHash:        'a'.repeat(64),
+    })
+    const result = await ledger.replayBlock('tenant-A', 1)
+    expect(result.authority).toEqual({
+      authoritySnapshotId: 'asg-9@v2',
+      policyVersion:       '4.2.0',
+      boundaryHash:        'a'.repeat(64),
+    })
+  })
+
+  test('replay authority is null for legacy blocks without provenance', async () => {
+    await ledger.commit(baseCommit)
+    const result = await ledger.replayBlock('tenant-A', 1)
+    expect(result.authority).toBeNull()
+  })
+
+  test('verifyFromGenesis proves the whole chain with no gaps', async () => {
+    for (let i = 0; i < 3; i++) await ledger.commit(baseCommit)
+    const genesis = await ledger.replayBlock('tenant-A', 1)
+    const result = await ledger.verifyFromGenesis('tenant-A', genesis.storedChecksum)
+    expect(result.valid).toBe(true)
+    expect(result.totalBlocks).toBe(3)
+  })
+
+  test('verifyFromGenesis rejects a mismatched genesis anchor', async () => {
+    await ledger.commit(baseCommit)
+    const result = await ledger.verifyFromGenesis('tenant-A', 'not-the-real-genesis')
+    expect(result.valid).toBe(false)
+    expect(result.brokenAt).toBe(1)
+  })
+
   // QA BUG FIX: concurrent commits must not fork the chain
   test('[QA FIX] concurrent commits produce sequential block numbers', async () => {
     const [b1, b2, b3] = await Promise.all([
