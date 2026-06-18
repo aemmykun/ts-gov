@@ -18,7 +18,18 @@ export interface AuditLockRecord extends AuditLockProvenance {
   lockedAt:   string
 }
 
-export class AuditLockService {
+// Sink for legal-hold audit locks. Implemented by the in-memory reference
+// service and by the Postgres-backed service (which persists to `audit_locks`).
+export interface AuditLockSink {
+  lock(
+    documentId: string,
+    tenantId: string,
+    reason: string,
+    provenance?: AuditLockProvenance,
+  ): AuditLockRecord | Promise<AuditLockRecord>
+}
+
+export class AuditLockService implements AuditLockSink {
   private locks: AuditLockRecord[] = []
 
   lock(

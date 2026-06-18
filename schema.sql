@@ -140,6 +140,7 @@ create index if not exists idx_rag_chunks_scope
 create table if not exists evidence_ledger (
   tenant_id uuid not null,
   id uuid not null default gen_random_uuid(),
+  block_number bigint not null,
   request_id uuid not null,
   decision text not null check (decision in ('ALLOW', 'DENY')),
   dar_decision_hash text not null,
@@ -148,12 +149,17 @@ create table if not exists evidence_ledger (
   response_hash text,
   previous_hash text,
   current_hash text not null,
+  next_hash text,
   authority_snapshot_id text,
   policy_version text,
   boundary_hash text,
+  user_identity jsonb not null,
+  ai_output jsonb,
+  handoff jsonb,
   data_json jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
-  primary key (tenant_id, id)
+  primary key (tenant_id, id),
+  unique (tenant_id, block_number)
 );
 
 -- ── Governance replay primitives (persist "why was this allowed/denied?") ────

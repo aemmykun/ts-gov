@@ -3,7 +3,7 @@ import { EvidenceBlock } from './types'
 export interface LedgerStore {
   getLatest(tenantId: string): Promise<EvidenceBlock | null>
   append(block: EvidenceBlock): Promise<void>
-  updateNextHash(blockId: string, nextHash: string): Promise<void>
+  updateNextHash(tenantId: string, blockId: string, nextHash: string): Promise<void>
   getRange(tenantId: string, from: number, to: number): Promise<EvidenceBlock[]>
   getByNumber(tenantId: string, blockNumber: number): Promise<EvidenceBlock | null>
 }
@@ -32,15 +32,12 @@ export class InMemoryLedgerStore implements LedgerStore {
     this.chain(block.tenantId).push(block)
   }
 
-  async updateNextHash(blockId: string, nextHash: string): Promise<void> {
-    for (const chain of this.chains.values()) {
-      const b = chain.find(x => x.blockId === blockId)
-      if (b) {
-        b.auditTrail.nextHash = nextHash
-        return
-      }
+  async updateNextHash(tenantId: string, blockId: string, nextHash: string): Promise<void> {
+    const b = this.chain(tenantId).find(x => x.blockId === blockId)
+    if (!b) {
+      throw new Error(`LEDGER_STORE: block ${blockId} not found for updateNextHash`)
     }
-    throw new Error(`LEDGER_STORE: block ${blockId} not found for updateNextHash`)
+    b.auditTrail.nextHash = nextHash
   }
 
   async getRange(tenantId: string, from: number, to: number): Promise<EvidenceBlock[]> {

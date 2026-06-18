@@ -59,6 +59,11 @@ export { EvidenceLedger } from './ledger/EvidenceLedger'
 export { ChainVerifier } from './ledger/ChainVerifier'
 export { ReplayEngine } from './ledger/ReplayEngine'
 export { LedgerStore, InMemoryLedgerStore } from './ledger/LedgerStore'
+export { LedgerLock, InProcessLedgerLock } from './ledger/LedgerLock'
+export { AuditLockSink } from './policy/AuditLockService'
 
 // Canonical runtime pipeline
 export * from './TenantSagePipeline'
+
+// Postgres persistence layer (opt-in; backed by schema.sql)
+export * from './persistence'
