@@ -1,6 +1,5 @@
 import { EvidenceBoundary } from '../dar/types'
 import { ApprovedEvidenceCorpus, GovernedChunk, FilterOptions } from '../runtime/ApprovedEvidenceCorpus'
-import { TenantClaim } from '../identity/types'
 import { RetrievalPredicate, VectorIndex } from './types'
 
 export class UnauthorizedRetrievalError extends Error {
@@ -43,10 +42,11 @@ export class TrustRAGRetriever {
     }
   }
 
+  // Authority is derived entirely from the boundary — the identity claim never
+  // enters retrieval, so claim.role can't accidentally influence what is read.
   async retrieve(
     embedding: number[],
     topK: number,
-    claim: TenantClaim,
     boundary: EvidenceBoundary,
     options: FilterOptions = {},
   ): Promise<RetrievalResult> {
@@ -60,7 +60,7 @@ export class TrustRAGRetriever {
     const raw = await this.index.searchWithin({ embedding, topK, predicate })
 
     // Defence in depth: even predicate-scoped results are re-checked.
-    const result = this.corpus.filter(raw, claim, boundary, options)
+    const result = this.corpus.filter(raw, boundary, options)
 
     return {
       chunks:        result.chunks,

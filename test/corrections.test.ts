@@ -79,7 +79,7 @@ describe('Correction #2 — IngestionGovernanceBinder', () => {
 describe('Correction #3 — expanded corpus enforcement', () => {
   const corpus = new ApprovedEvidenceCorpus()
   const run = (c: GovernedChunk, b = managerBoundary, opts = {}) =>
-    corpus.filter([c], claim, b, opts)
+    corpus.filter([c], b, opts)
 
   test('removes chunk under legal hold', () => {
     const r = run(chunk({ governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant', legalHold: true } }))
@@ -235,7 +235,7 @@ describe('Correction #5 — TrustRAG governed retrieval', () => {
     const index = new SpyIndex([chunk()])
     const retriever = new TrustRAGRetriever(index)
     const empty: EvidenceBoundary = { ...managerBoundary, tenantIds: [], empty: true }
-    await expect(retriever.retrieve([0.1], 5, claim, empty)).rejects.toThrow(UnauthorizedRetrievalError)
+    await expect(retriever.retrieve([0.1], 5, empty)).rejects.toThrow(UnauthorizedRetrievalError)
     expect(index.lastQuery).toBeNull() // index was never touched
   })
 
@@ -255,7 +255,7 @@ describe('Correction #5 — TrustRAG governed retrieval', () => {
       chunk({ chunkId: 'c2', tenantId: 'tenant-B' }), // wrong tenant
     ])
     const retriever = new TrustRAGRetriever(index)
-    const r = await retriever.retrieve([0.1], 5, claim, managerBoundary)
+    const r = await retriever.retrieve([0.1], 5, managerBoundary)
     expect(index.lastQuery?.predicate.tenantIds).toEqual(['tenant-A'])
     expect(r.chunks).toHaveLength(1)
     expect(r.chunks[0].chunkId).toBe('c1')

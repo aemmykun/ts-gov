@@ -1,4 +1,3 @@
-import { TenantClaim } from '../identity/types'
 import { Role, roleLevel, roleMeetsThreshold } from '../identity/roles'
 import { DocumentStatus } from '../policy/types'
 import {
@@ -62,9 +61,10 @@ function toDate(v: string | Date | undefined): Date | null {
 // The "Ghost Effect": chunks the caller is not authorised to see are removed
 // entirely before they ever reach generation. Every removal is fail-closed.
 export class ApprovedEvidenceCorpus {
+  // Authority is derived entirely from the boundary; no identity claim is read
+  // here, so the corpus can never be tricked by a forged claim field.
   filter(
     chunks: GovernedChunk[],
-    claim: TenantClaim,
     boundary: EvidenceBoundary,
     options: FilterOptions = {},
   ): CorpusResult {

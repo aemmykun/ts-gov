@@ -596,13 +596,13 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   }
 
   test('approves valid chunk', () => {
-    const r = corpus.filter([mockChunk()], mockClaim, boundary)
+    const r = corpus.filter([mockChunk()], boundary)
     expect(r.chunks).toHaveLength(1)
     expect(r.filteredCount).toBe(0)
   })
 
   test('Ghost Effect removes wrong-tenant chunk', () => {
-    const r = corpus.filter([mockChunk({ tenantId: 'tenant-B' })], mockClaim, boundary)
+    const r = corpus.filter([mockChunk({ tenantId: 'tenant-B' })], boundary)
     expect(r.chunks).toHaveLength(0)
     expect(r.filteredCount).toBe(1)
   })
@@ -610,13 +610,13 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   test('Ghost Effect removes quarantined chunk', () => {
     const r = corpus.filter(
       [mockChunk({ governance: { status: 'quarantined', allowedRoles: ['manager'], visibility: 'tenant' } })],
-      mockClaim, boundary
+      boundary
     )
     expect(r.chunks).toHaveLength(0)
   })
 
   test('Ghost Effect removes wrong-family chunk', () => {
-    const r = corpus.filter([mockChunk({ familyId: 'family-Y' })], mockClaim, boundary)
+    const r = corpus.filter([mockChunk({ familyId: 'family-Y' })], boundary)
     expect(r.chunks).toHaveLength(0)
   })
 
@@ -624,7 +624,7 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   // manager should NOT be denied from ['owner','admin','manager'] docs
   test('[QA FIX] manager can access docs with allowedRoles [owner, admin, manager]', () => {
     const chunk = mockChunk({ governance: { status: 'active', allowedRoles: ['owner', 'admin', 'manager'], visibility: 'tenant' } })
-    const r = corpus.filter([chunk], mockClaim, boundary)
+    const r = corpus.filter([chunk], boundary)
     expect(r.chunks).toHaveLength(1)
   })
 
@@ -632,14 +632,14 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   // A viewer-authority boundary cannot read manager+ docs.
   test('[QA FIX] viewer is denied from manager+ docs', () => {
     const viewerBoundary: EvidenceBoundary = { ...boundary, allowedRoles: ['viewer'] }
-    const r = corpus.filter([mockChunk()], mockClaim, viewerBoundary)
+    const r = corpus.filter([mockChunk()], viewerBoundary)
     expect(r.chunks).toHaveLength(0)
   })
 
   test('[QA FIX] owner wildcard family sees all family chunks', () => {
     const ownerBoundary: EvidenceBoundary = { ...boundary, allFamilies: true, familyIds: [] }
     const chunk = mockChunk({ familyId: 'family-COMPLETELY-DIFFERENT' })
-    const r = corpus.filter([chunk], mockClaim, ownerBoundary)
+    const r = corpus.filter([chunk], ownerBoundary)
     expect(r.chunks).toHaveLength(1)
   })
 
@@ -650,7 +650,7 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
       mockChunk(),
       mockChunk({ governance: { status: 'quarantined', allowedRoles: ['manager'], visibility: 'tenant' } })
     ]
-    const r = corpus.filter(chunks, mockClaim, boundary)
+    const r = corpus.filter(chunks, boundary)
     expect(r.chunks).toHaveLength(2)
     expect(r.filteredCount).toBe(2)
   })

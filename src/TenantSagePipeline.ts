@@ -113,7 +113,7 @@ export class TenantSagePipeline {
 
     // 6/7. TrustRAG governed retrieval → approved evidence corpus.
     const retrieval = await this.retriever.retrieve(
-      req.embedding, req.topK, req.claim, boundary, req.filterOptions,
+      req.embedding, req.topK, boundary, req.filterOptions,
     )
 
     // No Evidence → No Generation.

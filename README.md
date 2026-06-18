@@ -62,7 +62,11 @@ audit-grade:
 resolved exclusively from the authoritative `UserAssignment` via the DAR, so an
 `if (claim.role === 'admin')` escalation is impossible by construction.
 `TenantIsolationGuard.enforceFamily(assignment, requestedFamilyId)` likewise
-checks the assignment, not the claim.
+checks the assignment, not the claim. Retrieval is boundary-only too:
+`TrustRAGRetriever.retrieve(embedding, topK, boundary)` and
+`ApprovedEvidenceCorpus.filter(chunks, boundary)` take no claim, so authority is
+derived solely from the DAR boundary and `claim.role` can never leak into the
+retrieval path.
 
 > **Role model:** `allowedRoles` is a **minimum-threshold** set, not an OR
 > allow-list. The lowest-privilege role in the list (and anything above it) is
