@@ -38,6 +38,7 @@ export interface PipelineRequest {
   embedding: number[]
   topK:      number
   ruleVersion: string
+  requestId?: string
   handoff?:  HandOffManifest
   filterOptions?: FilterOptions
 }
@@ -99,7 +100,7 @@ export class TenantSagePipeline {
     const boundary = await this.dar.resolve(req.claim)
 
     // No Authority → No Retrieval. Enforced here, not assumed downstream.
-    if (boundary.empty || boundary.tenantIds.length === 0) {
+    if (boundary.empty || boundary.scopes.length === 0) {
       throw new NoAuthorityError()
     }
 
@@ -111,8 +112,9 @@ export class TenantSagePipeline {
       throw new PolicyDeniedError(policyResult.reason ?? 'policy gate failed')
     }
 
-    // 6/7. TrustRAG governed retrieval → approved evidence corpus.
-    const retrieval = await this.retriever.retrieve(
+    // 6/7. TrustRAG governed retrieval (the canonical searchRagChunksAudited
+    //       enforcement point) → approved evidence corpus.
+    const retrieval = await this.retriever.searchRagChunksAudited(
       req.embedding, req.topK, boundary, req.filterOptions,
     )
 
@@ -126,21 +128,26 @@ export class TenantSagePipeline {
 
     // 9. Evidence ledger — replayable, tamper-evident record of the decision,
     //    stamped with the authority/policy snapshot and a boundary hash.
+    const darDecisionHash = this.hashBoundary(boundary)
     const block = await this.ledger.commit({
       claim:        req.claim,
-      policyResult,
-      ruleVersion:  req.ruleVersion,
-      documentIds:  [...new Set(retrieval.chunks.map(c => c.sourceId))],
-      chunkIds:     retrieval.chunks.map(c => c.chunkId),
-      contextText:  retrieval.chunks.map(c => c.content).join('\n'),
-      aiResponse:   gen.response,
+      requestId:    req.requestId ?? crypto.randomUUID(),
+      decision:     'ALLOW',
+      darDecisionHash,
+      retrievedEvidenceIds: retrieval.chunks.map(c => c.chunkId),
+      promptText:   req.query,
+      responseText: gen.response,
       modelUsed:    gen.modelUsed,
       tokenCount:   gen.tokenCount,
-      queryText:    req.query,
+      dataJson:     {
+        sourceIds: [...new Set(retrieval.chunks.map(c => c.sourceId))],
+        ruleVersion: req.ruleVersion,
+        filteredCount: retrieval.filteredCount,
+      },
       handoff:      req.handoff,
       authoritySnapshotId: boundary.authoritySnapshotId,
       policyVersion:       boundary.policyVersion,
-      boundaryHash:        this.hashBoundary(boundary),
+      boundaryHash:        darDecisionHash,
     })
 
     return { boundary, chunks: retrieval.chunks, response: gen.response, block }

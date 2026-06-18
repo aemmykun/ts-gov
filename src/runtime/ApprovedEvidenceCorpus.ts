@@ -1,44 +1,27 @@
-import { Role, roleLevel, roleMeetsThreshold } from '../identity/roles'
-import { DocumentStatus } from '../policy/types'
-import {
-  Classification, Sensitivity, classificationWithin, sensitivityWithin,
-} from '../policy/classification'
+import { ChunkStatus } from '../policy/types'
+import { Classification } from '../policy/classification'
 import { EvidenceBoundary } from '../dar/types'
+import { scopeMatches } from '../dar/scope'
 
-export type Visibility = 'private' | 'family' | 'tenant' | 'public'
-
-export interface ChunkGovernance {
-  status:        DocumentStatus
-  // MINIMUM-THRESHOLD set, not an OR allow-list: the lowest-privilege role here
-  // (and any role above it) may access the chunk. See roleMeetsThreshold().
-  allowedRoles:  Role[]
-  visibility:    Visibility
-  // Correction #3 — additional governance dimensions enforced here too.
-  legalHold?:     boolean
-  retainUntil?:   string | Date
-  effectiveFrom?: string | Date
-  effectiveTo?:   string | Date
-  classification?: Classification
-  sensitivity?:    Sensitivity
-  lifecycle?:      'active' | 'superseded' | 'retired' | 'draft'
-}
-
+// A governed chunk (mirrors the governance-relevant columns of `rag_chunks`).
 export interface GovernedChunk {
-  chunkId:         string
-  sourceId:        string
-  tenantId:        string
-  organisationId?: string
-  scopeId?:        string
-  familyId:        string
-  content:         string
-  governance:      ChunkGovernance
+  chunkId:        string
+  sourceId:       string
+  tenantId:       string
+  familyId:       string | null   // null = tenant-global
+  childId:        string | null   // null = family-level
+  topicKey:       string
+  status:         ChunkStatus
+  legalHold:      boolean
+  validFrom:      string | Date
+  validTo?:       string | Date | null
+  content:        string
+  classification?: Classification
+  metadata?:      Record<string, unknown>
 }
 
 export interface FilterOptions {
-  // Fail-closed strict mode: chunks missing required governance metadata are
-  // rejected rather than allowed (correction #2 — no implicit defaults).
-  strict?: boolean
-  now?:    Date
+  now?: Date
 }
 
 export interface RemovedChunk {
@@ -52,14 +35,16 @@ export interface CorpusResult {
   removed:       RemovedChunk[]
 }
 
-function toDate(v: string | Date | undefined): Date | null {
-  if (v === undefined) return null
+function toDate(v: string | Date | undefined | null): Date | null {
+  if (v === undefined || v === null) return null
   const d = v instanceof Date ? v : new Date(v)
   return Number.isNaN(d.getTime()) ? null : d
 }
 
-// The "Ghost Effect": chunks the caller is not authorised to see are removed
-// entirely before they ever reach generation. Every removal is fail-closed.
+// The canonical governed-retrieval filter (the in-memory analogue of the SQL
+// `search_rag_chunks_audited()` enforcement). Chunks the caller is not
+// authorised to see are removed entirely before they ever reach generation —
+// every removal is fail-closed.
 export class ApprovedEvidenceCorpus {
   // Authority is derived entirely from the boundary; no identity claim is read
   // here, so the corpus can never be tricked by a forged claim field.
@@ -69,13 +54,9 @@ export class ApprovedEvidenceCorpus {
     options: FilterOptions = {},
   ): CorpusResult {
     const now = options.now ?? new Date()
-    const strict = options.strict ?? false
-
-    const kept: GovernedChunk[] = []
-    const removed: RemovedChunk[] = []
 
     // No authority at all ⇒ nothing is retrievable.
-    if (boundary.empty || boundary.tenantIds.length === 0) {
+    if (boundary.empty || boundary.scopes.length === 0) {
       return {
         chunks: [],
         filteredCount: chunks.length,
@@ -83,115 +64,46 @@ export class ApprovedEvidenceCorpus {
       }
     }
 
-    const effectiveRole = this.effectiveRole(boundary)
+    const kept: GovernedChunk[] = []
+    const removed: RemovedChunk[] = []
 
     for (const chunk of chunks) {
-      const reason = this.rejectionReason(chunk, effectiveRole, boundary, now, strict)
-      if (reason) {
-        removed.push({ chunkId: chunk.chunkId, reason })
-      } else {
-        kept.push(chunk)
-      }
+      const reason = this.rejectionReason(chunk, boundary, now)
+      if (reason) removed.push({ chunkId: chunk.chunkId, reason })
+      else kept.push(chunk)
     }
 
     return { chunks: kept, filteredCount: removed.length, removed }
   }
 
-  // Authoritative role = highest role granted by the DAR boundary. NOT the JWT
-  // claim role (correction #1).
-  private effectiveRole(boundary: EvidenceBoundary): Role | null {
-    if (!boundary.allowedRoles || boundary.allowedRoles.length === 0) return null
-    return [...boundary.allowedRoles].sort((a, b) => roleLevel(b) - roleLevel(a))[0]
-  }
-
   private rejectionReason(
     chunk: GovernedChunk,
-    effectiveRole: Role | null,
     boundary: EvidenceBoundary,
     now: Date,
-    strict: boolean,
   ): string | null {
-    const g = chunk.governance
-
     // Tenant isolation.
-    if (!boundary.tenantIds.includes(chunk.tenantId)) return 'tenant-mismatch'
+    if (chunk.tenantId !== boundary.tenantId) return 'tenant-mismatch'
 
-    // Organisation membership (enforced when the boundary scopes organisations).
-    if (boundary.organisationIds.length > 0) {
-      if (chunk.organisationId === undefined) return 'organisation-missing'
-      if (!boundary.organisationIds.includes(chunk.organisationId)) return 'organisation-mismatch'
-    } else if (strict && chunk.organisationId === undefined) {
-      return 'organisation-missing'
-    }
+    // Family / child scope.
+    if (!scopeMatches(boundary.scopes, chunk.familyId, chunk.childId)) return 'scope-mismatch'
 
-    // Scope membership (enforced when the boundary scopes scopes).
-    if (boundary.scopeIds.length > 0) {
-      if (chunk.scopeId === undefined) return 'scope-missing'
-      if (!boundary.scopeIds.includes(chunk.scopeId)) return 'scope-mismatch'
-    } else if (strict && chunk.scopeId === undefined) {
-      return 'scope-missing'
-    }
+    // Topic eligibility.
+    if (!boundary.eligibleTopics.includes(chunk.topicKey)) return 'topic-not-eligible'
 
-    // Family / scope membership (tenant-wide for owners via allFamilies).
-    if (!boundary.allFamilies && !boundary.familyIds.includes(chunk.familyId)) {
-      return 'family-mismatch'
-    }
-
-    // Lifecycle status must be within the boundary's allowed statuses.
-    if (!boundary.allowedStatuses.includes(g.status)) return 'status-not-allowed'
-
-    // Authoritative role hierarchy.
-    if (!effectiveRole) return 'no-authoritative-role'
-    if (!roleMeetsThreshold(effectiveRole, g.allowedRoles)) return 'role-insufficient'
+    // Lifecycle status.
+    if (!boundary.allowedStatuses.includes(chunk.status)) return 'status-not-allowed'
 
     // Legal hold — held evidence is never retrievable.
-    if (g.legalHold === true) return 'legal-hold'
+    if (chunk.legalHold === true) return 'legal-hold'
 
-    // Retention expiry.
-    const retainUntil = toDate(g.retainUntil)
-    if (retainUntil) {
-      if (retainUntil.getTime() <= now.getTime()) return 'retention-expired'
-    } else if (strict) {
-      return 'retention-missing'
-    }
+    // Effective window: must be on/after validFrom and before validTo.
+    const validFrom = toDate(chunk.validFrom)
+    if (!validFrom) return 'effective-window-invalid'
+    if (now.getTime() < validFrom.getTime()) return 'not-yet-effective'
 
-    // Effective date window.
-    const effFrom = toDate(g.effectiveFrom)
-    const effTo   = toDate(g.effectiveTo)
-    if (effFrom || effTo) {
-      if (!effFrom || !effTo) return 'effective-window-incomplete'
-      if (effFrom.getTime() > effTo.getTime()) return 'effective-window-integrity'
-      if (now.getTime() < effFrom.getTime()) return 'not-yet-effective'
-      if (now.getTime() > effTo.getTime()) return 'past-effective'
-    } else if (strict) {
-      return 'effective-window-missing'
-    }
-
-    // Lifecycle (when present) must be an active state.
-    if (g.lifecycle !== undefined && g.lifecycle !== 'active') return 'lifecycle-inactive'
-
-    // Classification ceiling.
-    if (this.classifiedAbove(g.classification, boundary.classificationLevel, strict)) {
-      return 'classification-exceeds-boundary'
-    }
-
-    // Sensitivity ceiling.
-    if (this.sensitiveAbove(g.sensitivity, boundary.sensitivityLevel, strict)) {
-      return 'sensitivity-exceeds-boundary'
-    }
+    const validTo = toDate(chunk.validTo)
+    if (validTo && now.getTime() >= validTo.getTime()) return 'retention-expired'
 
     return null
-  }
-
-  // Absent metadata is allowed in lenient mode (backward compatible) but rejected
-  // in strict mode (correction #2). Present values are tier-compared.
-  private classifiedAbove(value: Classification | undefined, ceiling: Classification, strict: boolean): boolean {
-    if (value === undefined) return strict
-    return !classificationWithin(value, ceiling)
-  }
-
-  private sensitiveAbove(value: Sensitivity | undefined, ceiling: Sensitivity, strict: boolean): boolean {
-    if (value === undefined) return strict
-    return !sensitivityWithin(value, ceiling)
   }
 }

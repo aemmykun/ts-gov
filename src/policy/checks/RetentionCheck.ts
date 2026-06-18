@@ -4,26 +4,29 @@ function isValidDate(d: unknown): d is Date {
   return d instanceof Date && !Number.isNaN(d.getTime())
 }
 
+// Retention: a resource is unretrievable once its validTo has passed. A null
+// validTo means "retain indefinitely". An invalid (non-null) validTo fails closed.
 export class RetentionCheck implements PolicyCheck {
   run(ctx: PolicyContext): PolicyCheckResult {
-    const { document, requestedAt } = ctx
-    const retainUntil = document.retainUntil
+    const { resource, requestedAt } = ctx
+    const validTo = resource.validTo ?? null
 
-    // Fail-closed: missing or invalid retention metadata is never trusted.
-    if (!isValidDate(retainUntil)) {
+    if (validTo === null) return { passed: true }
+
+    if (!isValidDate(validTo)) {
       return {
         passed:   false,
         failedAt: 'retention',
-        reason:   'Retention policy missing or invalid (fail-closed)',
+        reason:   'Retention validTo is invalid (fail-closed)',
       }
     }
 
     const now = isValidDate(requestedAt) ? requestedAt : new Date()
-    if (retainUntil.getTime() <= now.getTime()) {
+    if (validTo.getTime() <= now.getTime()) {
       return {
         passed:   false,
         failedAt: 'retention',
-        reason:   `Document retention expired at ${retainUntil.toISOString()}`,
+        reason:   `Resource retention expired at ${validTo.toISOString()}`,
       }
     }
 

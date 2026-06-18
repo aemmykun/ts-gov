@@ -4,51 +4,28 @@ function isValidDate(d: unknown): d is Date {
   return d instanceof Date && !Number.isNaN(d.getTime())
 }
 
+// Effective-date window: a resource is only retrievable once validFrom has been
+// reached (the validTo upper bound is enforced by RetentionCheck). An invalid
+// validFrom fails closed.
 export class EffectiveDateCheck implements PolicyCheck {
   run(ctx: PolicyContext): PolicyCheckResult {
-    const { document, requestedAt } = ctx
+    const { resource, requestedAt } = ctx
+    const { validFrom } = resource
 
-    // Lifecycle status is evaluated BEFORE the date window: a quarantined doc
-    // with a valid date range must still be rejected.
-    if (document.status !== 'active') {
+    if (!isValidDate(validFrom)) {
       return {
         passed:   false,
         failedAt: 'effective_date',
-        reason:   `Document status '${document.status}' (e.g. quarantined) is not retrievable`,
-      }
-    }
-
-    const { effectiveFrom, effectiveTo } = document
-
-    if (!isValidDate(effectiveFrom) || !isValidDate(effectiveTo)) {
-      return {
-        passed:   false,
-        failedAt: 'effective_date',
-        reason:   'Effective date window is invalid (fail-closed)',
-      }
-    }
-
-    if (effectiveFrom.getTime() > effectiveTo.getTime()) {
-      return {
-        passed:   false,
-        failedAt: 'effective_date',
-        reason:   'effectiveFrom is after effectiveTo — data integrity error',
+        reason:   'Resource validFrom is invalid (fail-closed)',
       }
     }
 
     const now = isValidDate(requestedAt) ? requestedAt : new Date()
-    if (now.getTime() < effectiveFrom.getTime()) {
+    if (now.getTime() < validFrom.getTime()) {
       return {
         passed:   false,
         failedAt: 'effective_date',
-        reason:   'Document is not yet effective',
-      }
-    }
-    if (now.getTime() > effectiveTo.getTime()) {
-      return {
-        passed:   false,
-        failedAt: 'effective_date',
-        reason:   'Document is past its effective window',
+        reason:   'Resource is not yet effective',
       }
     }
 

@@ -15,7 +15,8 @@ export interface RetrievalResult {
   filteredCount: number
 }
 
-// Governed retrieval. Correction #5:
+// Governed retrieval. The single canonical enforcement point (the in-memory
+// analogue of the SQL `search_rag_chunks_audited()`):
 //  - the DAR boundary is compiled into a deterministic predicate;
 //  - an empty boundary fails closed (no search is performed);
 //  - the index is only ever queried *within* the predicate — never unrestricted;
@@ -27,24 +28,19 @@ export class TrustRAGRetriever {
 
   // Pure, deterministic compilation of authority → predicate.
   compilePredicate(boundary: EvidenceBoundary): RetrievalPredicate {
-    const denyAll = Boolean(boundary.empty) || boundary.tenantIds.length === 0
+    const denyAll = Boolean(boundary.empty) || boundary.scopes.length === 0
     return {
-      tenantIds:           [...boundary.tenantIds],
-      organisationIds:     [...boundary.organisationIds],
-      scopeIds:            [...boundary.scopeIds],
-      familyIds:           [...boundary.familyIds],
-      allFamilies:         boundary.allFamilies,
-      allowedStatuses:     [...boundary.allowedStatuses],
-      allowedRoleNames:    [...boundary.allowedRoles],
-      classificationLevel: boundary.classificationLevel,
-      sensitivityLevel:    boundary.sensitivityLevel,
+      tenantId:        boundary.tenantId,
+      scopes:          boundary.scopes.map(s => ({ ...s })),
+      eligibleTopics:  [...boundary.eligibleTopics],
+      allowedStatuses: [...boundary.allowedStatuses],
       denyAll,
     }
   }
 
-  // Authority is derived entirely from the boundary — the identity claim never
-  // enters retrieval, so claim.role can't accidentally influence what is read.
-  async retrieve(
+  // Canonical governed retrieval. Authority is derived entirely from the
+  // boundary — the identity claim never enters retrieval.
+  async searchRagChunksAudited(
     embedding: number[],
     topK: number,
     boundary: EvidenceBoundary,
@@ -67,5 +63,15 @@ export class TrustRAGRetriever {
       predicate,
       filteredCount: result.filteredCount,
     }
+  }
+
+  // Backwards-compatible alias for the canonical enforcement entrypoint.
+  retrieve(
+    embedding: number[],
+    topK: number,
+    boundary: EvidenceBoundary,
+    options: FilterOptions = {},
+  ): Promise<RetrievalResult> {
+    return this.searchRagChunksAudited(embedding, topK, boundary, options)
   }
 }

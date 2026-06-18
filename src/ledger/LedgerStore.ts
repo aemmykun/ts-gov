@@ -29,14 +29,14 @@ export class InMemoryLedgerStore implements LedgerStore {
   }
 
   async append(block: EvidenceBlock): Promise<void> {
-    this.chain(block.userIdentity.tenantId).push(block)
+    this.chain(block.tenantId).push(block)
   }
 
   async updateNextHash(blockId: string, nextHash: string): Promise<void> {
     for (const chain of this.chains.values()) {
       const b = chain.find(x => x.blockId === blockId)
       if (b) {
-        b.auditTrail.nextBlockHash = nextHash
+        b.auditTrail.nextHash = nextHash
         return
       }
     }

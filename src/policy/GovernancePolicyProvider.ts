@@ -1,14 +1,30 @@
 import { createHash } from 'crypto'
-import { DocumentPolicy } from './types'
+import { Classification } from './classification'
 
-// Correction #2: governance metadata (retainUntil, effectiveTo, allowedRoles,
-// visibility, legalHold, classification, sensitivity, status) must come from an
-// authoritative governance policy — it is NEVER synthesised from defaults
-// during ingestion.
+// Authoritative governance for an ingestion source (mirrors `rag_sources`).
+// Governance metadata is NEVER synthesised from defaults during ingestion — it
+// must come from an authoritative provider.
+export interface SourceGovernance {
+  sourceId:          string
+  tenantId:          string
+  familyId:          string | null
+  childId:           string | null
+  sourceType:        string
+  sourceUri:         string
+  classification:    Classification
+  retentionPolicyId: string
+  legalHold:         boolean
+  validFrom:         Date
+  validTo:           Date | null
+  // Version of the governing policy set (proves WHICH policy authorised ingestion).
+  policyVersion:     string
+  // Optional integrity anchor: sha256 of the canonical governance record.
+  policyChecksum?:   string
+}
 
 export interface GovernancePolicyProvider {
-  // Returns the authoritative policy for a source, or null if none is defined.
-  getPolicy(sourceId: string, tenantId: string): Promise<DocumentPolicy | null>
+  // Returns the authoritative governance for a source, or null if none exists.
+  getPolicy(sourceId: string, tenantId: string): Promise<SourceGovernance | null>
 }
 
 export class MissingGovernancePolicyError extends Error {
@@ -31,27 +47,24 @@ export class PolicyIntegrityError extends Error {
   }
 }
 
-// Deterministic sha256 over the canonical policy (excluding the checksum field
-// itself, with Dates normalised to ISO). Two equal policies always hash equal.
-export function computePolicyChecksum(policy: DocumentPolicy): string {
-  const canonical = (() => {
-    const entries = Object.entries(policy)
-      .filter(([k]) => k !== 'policyChecksum')
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => [k, v instanceof Date ? v.toISOString() : v])
-    return JSON.stringify(Object.fromEntries(entries))
-  })()
-  return createHash('sha256').update(canonical).digest('hex')
+// Deterministic sha256 over the canonical governance record (excluding the
+// checksum field itself, with Dates normalised to ISO). Two equal records always
+// hash equal.
+export function computePolicyChecksum(policy: SourceGovernance): string {
+  const entries = Object.entries(policy)
+    .filter(([k]) => k !== 'policyChecksum')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => [k, v instanceof Date ? v.toISOString() : v])
+  return createHash('sha256').update(JSON.stringify(Object.fromEntries(entries))).digest('hex')
 }
 
-// Binds governance to a document at ingestion time. If the authoritative
-// provider has no policy, ingestion is REFUSED — no default retainUntil /
-// effectiveTo / allowedRoles / visibility / legalHold is ever fabricated. When
-// the policy carries a checksum it is verified, so a tampered policy is rejected.
+// Binds governance to a source at ingestion time. If the authoritative provider
+// has no policy, ingestion is REFUSED — no defaults are ever fabricated. When the
+// policy carries a checksum it is verified, so a tampered policy is rejected.
 export class IngestionGovernanceBinder {
   constructor(private provider: GovernancePolicyProvider) {}
 
-  async bind(sourceId: string, tenantId: string): Promise<DocumentPolicy> {
+  async bind(sourceId: string, tenantId: string): Promise<SourceGovernance> {
     const policy = await this.provider.getPolicy(sourceId, tenantId)
     if (!policy) {
       throw new MissingGovernancePolicyError(sourceId, tenantId)
