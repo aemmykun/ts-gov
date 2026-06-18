@@ -40,7 +40,9 @@ export class PolicyEngine {
             ctx.document.documentId,
             ctx.document.tenantId,
             result.reason ?? 'legal hold',
-            ctx.provenance ?? {},
+            // The document's own policy version anchors the lock even when the
+            // caller supplies no extra provenance.
+            { policyVersion: ctx.document.policyVersion, ...ctx.provenance },
           )
         }
         return result

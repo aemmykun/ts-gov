@@ -19,6 +19,12 @@ export interface DocumentPolicy {
   status:           DocumentStatus
   classification?:  string
   sensitivity?:     string
+  // Authoritative version of the governing policy (e.g. "2026.06.18" or "4.2.0").
+  // Required so a replay can prove WHICH policy set authorised the document.
+  policyVersion:    string
+  // Optional integrity anchor: sha256 of the canonical policy, so a replay can
+  // prove the policy itself was not altered after the fact.
+  policyChecksum?:  string
 }
 
 export interface PolicyContext {

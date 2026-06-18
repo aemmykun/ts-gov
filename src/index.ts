@@ -21,6 +21,8 @@ export {
   GovernancePolicyProvider,
   IngestionGovernanceBinder,
   MissingGovernancePolicyError,
+  PolicyIntegrityError,
+  computePolicyChecksum,
 } from './policy/GovernancePolicyProvider'
 
 // DAR (correction #1)

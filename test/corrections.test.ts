@@ -12,6 +12,8 @@ import {
   IngestionGovernanceBinder,
   GovernancePolicyProvider,
   MissingGovernancePolicyError,
+  PolicyIntegrityError,
+  computePolicyChecksum,
 } from '../src/policy/GovernancePolicyProvider'
 import { DocumentPolicy } from '../src/policy/types'
 import { HandOffBuilder } from '../src/handoff/HandOffBuilder'
@@ -54,6 +56,7 @@ describe('Correction #2 — IngestionGovernanceBinder', () => {
     retainUntil: new Date(Date.now() + 1e9), legalHold: false,
     allowedRoles: ['manager'], effectiveFrom: new Date(Date.now() - 1e6),
     effectiveTo: new Date(Date.now() + 1e9), status: 'active',
+    policyVersion: '4.2.0',
   }
 
   const providerWith = (p: DocumentPolicy | null): GovernancePolicyProvider => ({
@@ -69,6 +72,24 @@ describe('Correction #2 — IngestionGovernanceBinder', () => {
   test('refuses ingestion (fail-closed) when no authoritative policy exists', async () => {
     const binder = new IngestionGovernanceBinder(providerWith(null))
     await expect(binder.bind('s1', 'tenant-A')).rejects.toThrow(MissingGovernancePolicyError)
+  })
+
+  test('carries an authoritative policyVersion', async () => {
+    const binder = new IngestionGovernanceBinder(providerWith(policy))
+    const bound = await binder.bind('s1', 'tenant-A')
+    expect(bound.policyVersion).toBe('4.2.0')
+  })
+
+  test('accepts a policy whose checksum matches', async () => {
+    const signed = { ...policy, policyChecksum: computePolicyChecksum(policy) }
+    const binder = new IngestionGovernanceBinder(providerWith(signed))
+    await expect(binder.bind('s1', 'tenant-A')).resolves.toMatchObject({ policyVersion: '4.2.0' })
+  })
+
+  test('rejects a policy whose checksum was tampered (fail-closed)', async () => {
+    const tampered = { ...policy, policyChecksum: computePolicyChecksum(policy), retainUntil: new Date(Date.now() + 9e9) }
+    const binder = new IngestionGovernanceBinder(providerWith(tampered))
+    await expect(binder.bind('s1', 'tenant-A')).rejects.toThrow(PolicyIntegrityError)
   })
 })
 

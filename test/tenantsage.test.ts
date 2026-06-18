@@ -59,7 +59,8 @@ const mockDoc: DocumentPolicy = {
   allowedRoles:  ['owner', 'admin', 'manager'],
   effectiveFrom: new Date(Date.now() - 86_400_000),
   effectiveTo:   new Date(Date.now() + 86_400_000 * 365),
-  status:        'active'
+  status:        'active',
+  policyVersion: '4.2.0'
 }
 
 const ctx = (overrides: Partial<DocumentPolicy> = {}): PolicyContext => ({
