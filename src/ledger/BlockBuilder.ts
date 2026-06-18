@@ -18,6 +18,10 @@ export interface BlockInput {
   prevBlock:    EvidenceBlock | null
   blockNumber:  number
   handoff?:     HandOffManifest
+  // Replay provenance (audit-grade). Bound into the block checksum.
+  authoritySnapshotId?: string
+  policyVersion?:       string
+  boundaryHash?:        string
 }
 
 export class BlockBuilder {
@@ -52,6 +56,15 @@ export class BlockBuilder {
       tokenCount:   input.tokenCount
     }
 
+    const authority: EvidenceBlock['authority'] =
+      input.authoritySnapshotId || input.policyVersion || input.boundaryHash
+        ? {
+            authoritySnapshotId: input.authoritySnapshotId ?? '',
+            policyVersion:       input.policyVersion ?? '',
+            boundaryHash:        input.boundaryHash ?? '',
+          }
+        : null
+
     const prevBlockHash = input.prevBlock
       ? input.prevBlock.auditTrail.blockChecksum
       : 'GENESIS'
@@ -71,6 +84,7 @@ export class BlockBuilder {
       contextRetrieved,
       aiOutput,
       handoff,        // bound into the checksum so custody metadata is tamper-evident
+      authority,      // replay provenance bound into the checksum too
       queryHash,
       prevBlockHash
     }))
@@ -83,6 +97,7 @@ export class BlockBuilder {
       policyRules,
       contextRetrieved,
       aiOutput,
+      authority,
       auditTrail: {
         queryHash,
         prevBlockHash,

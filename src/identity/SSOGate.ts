@@ -91,12 +91,11 @@ export class SSOGate {
       throw new Error('IDENTITY_GATE: Entra token missing required claims (oid, tid)')
     }
 
+    // Identity only — authority (role/family/org) is resolved later from the
+    // authoritative assignment store, never read from token claims.
     return {
       userId:     payload.oid,
       tenantId:   payload.tid,
-      familyId:   (payload['extension_familyId'] as string | undefined) ?? payload.tid,
-      role:       (payload['extension_role'] as TenantClaim['role'] | undefined) ?? 'viewer',
-      orgUnit:    (payload['extension_orgUnit'] as string | undefined) ?? 'default',
       provider:   'entra',
       verifiedAt: Date.now()
     }
@@ -115,12 +114,10 @@ export class SSOGate {
       throw new Error('IDENTITY_GATE: Okta token missing required claims (sub, tenantId)')
     }
 
+    // Identity only — authority is resolved later from the assignment store.
     return {
       userId:     payload.sub,
       tenantId:   payload.tenantId as string,
-      familyId:   (payload.familyId as string | undefined) ?? (payload.tenantId as string),
-      role:       (payload.role as TenantClaim['role'] | undefined) ?? 'viewer',
-      orgUnit:    (payload.orgUnit as string | undefined) ?? 'default',
       provider:   'okta',
       verifiedAt: Date.now()
     }

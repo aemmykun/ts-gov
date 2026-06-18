@@ -55,6 +55,37 @@ audit-grade:
 - **No magic strings** — owner tenant-wide access is an explicit
   `allFamilies: boolean`, never `familyId === '*'`.
 
+## Identity ≠ Authority
+
+`TenantClaim` carries identity only (`userId`, `tenantId`, `provider`,
+`verifiedAt`). It has **no** `role` / `familyId` / `orgUnit` — authority is
+resolved exclusively from the authoritative `UserAssignment` via the DAR, so an
+`if (claim.role === 'admin')` escalation is impossible by construction.
+`TenantIsolationGuard.enforceFamily(assignment, requestedFamilyId)` likewise
+checks the assignment, not the claim.
+
+> **Role model:** `allowedRoles` is a **minimum-threshold** set, not an OR
+> allow-list. The lowest-privilege role in the list (and anything above it) is
+> permitted — `['owner','admin','manager']` means "manager and above". See
+> `roleMeetsThreshold()`.
+
+## Runtime fail-closed invariants (enforced in the pipeline)
+
+`TenantSagePipeline` enforces the governance invariants centrally rather than
+trusting downstream components:
+
+```text
+No Assignment → No Authority   (DAR returns an empty boundary)
+No Authority  → No Retrieval   (boundary.empty throws before the index)
+No Evidence   → No Generation  (empty approved corpus throws)
+```
+
+Plus: tenant isolation validates an explicit `requestedTenantId` (not the
+no-op `claim.tenantId` vs `claim.tenantId`), policy is evaluated *before*
+retrieval via an injected `PolicyDecisionProvider`, and every ledger block is
+stamped with `authoritySnapshotId` + `policyVersion` + a `boundaryHash` (bound
+into the tamper-evident checksum) so any decision is reproducible years later.
+
 ```ts
 interface EvidenceBoundary {
   tenantIds: string[]; organisationIds: string[]; scopeIds: string[]

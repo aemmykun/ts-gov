@@ -1,4 +1,5 @@
 import { TenantClaim } from './types'
+import { UserAssignment } from '../assignments/types'
 
 export class TenantIsolationGuard {
   enforce(claim: TenantClaim, requestedTenantId: string): void {
@@ -19,21 +20,23 @@ export class TenantIsolationGuard {
     }
   }
 
-  enforceFamily(claim: TenantClaim, requestedFamilyId: string): void {
-    // QA FIX 3: Owner role gets wildcard family access
-    if (claim.role === 'owner') return
+  // Family enforcement is driven by the AUTHORITATIVE assignment, never by a
+  // claim field. The claim attests identity only; what families a user may reach
+  // is authority, and authority lives in the assignment store.
+  enforceFamily(assignment: UserAssignment, requestedFamilyId: string): void {
+    // Owner has tenant-wide (all-families) access.
+    if (assignment.role === 'owner') return
 
-    const claimed   = claim.familyId.trim().toLowerCase()
     const requested = (requestedFamilyId ?? '').trim().toLowerCase()
-
     if (!requested) {
       throw new Error('FAMILY_ISOLATION: requestedFamilyId must not be empty')
     }
 
-    if (claimed !== requested) {
+    const granted = assignment.familyIds.map(f => f.trim().toLowerCase())
+    if (!granted.includes(requested)) {
       throw new Error(
         `FAMILY_ISOLATION: Cross-family access denied — ` +
-        `user family: ${claim.familyId}, requested: ${requestedFamilyId}`
+        `granted families: [${assignment.familyIds.join(', ')}], requested: ${requestedFamilyId}`
       )
     }
   }

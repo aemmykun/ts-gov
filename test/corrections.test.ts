@@ -19,10 +19,12 @@ import { HandOffVerifier } from '../src/handoff/HandOffVerifier'
 import { SigningKey } from '../src/handoff/HandOffSigner'
 import { TrustRAGRetriever, UnauthorizedRetrievalError } from '../src/trustrag/TrustRAGRetriever'
 import { VectorIndex, VectorQuery } from '../src/trustrag/types'
+import { TenantIsolationGuard } from '../src/identity/TenantIsolationGuard'
+import { UserAssignment } from '../src/assignments/types'
+import { roleMeetsThreshold } from '../src/identity/roles'
 
 const claim: TenantClaim = {
-  userId: 'user-001', tenantId: 'tenant-A', familyId: 'family-X',
-  role: 'manager', orgUnit: 'eng', provider: 'entra', verifiedAt: Date.now(),
+  userId: 'user-001', tenantId: 'tenant-A', provider: 'entra', verifiedAt: Date.now(),
 }
 
 const managerBoundary: EvidenceBoundary = {
@@ -297,5 +299,50 @@ describe('DAR audit-grade boundary (org/scope + snapshot + policy version)', () 
     expect(b.empty).toBe(true)
     expect(b.authoritySnapshotId).toBe('none')
     expect(b.policyVersion).toBe('4.2.0')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Authority hardening — identity ≠ authority + documented role threshold model
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Identity layer family enforcement is assignment-driven', () => {
+  const guard = new TenantIsolationGuard()
+  const assignment: UserAssignment = {
+    assignmentId: 'asg-1', assignmentVersion: 'v1',
+    userId: 'user-001', tenantId: 'tenant-A',
+    organisationIds: ['org-1'], scopeIds: [], familyIds: ['family-X'],
+    role: 'manager', classificationClearance: 'restricted', sensitivityClearance: 'critical',
+    source: 'test', assignedAt: new Date().toISOString(),
+  }
+
+  test('allows a family granted by the assignment', () => {
+    expect(() => guard.enforceFamily(assignment, 'family-X')).not.toThrow()
+  })
+
+  test('denies a family NOT in the assignment (no claim trust)', () => {
+    expect(() => guard.enforceFamily(assignment, 'family-Y')).toThrow('FAMILY_ISOLATION')
+  })
+
+  test('owner assignment is tenant-wide', () => {
+    expect(() => guard.enforceFamily({ ...assignment, role: 'owner' }, 'any-family')).not.toThrow()
+  })
+})
+
+describe('roleMeetsThreshold documents minimum-threshold (NOT OR) semantics', () => {
+  test("['owner','admin','manager'] means manager-and-above", () => {
+    expect(roleMeetsThreshold('manager', ['owner', 'admin', 'manager'])).toBe(true)
+    expect(roleMeetsThreshold('member',  ['owner', 'admin', 'manager'])).toBe(false)
+  })
+
+  test("['viewer','admin'] means viewer-and-above (the documented gotcha)", () => {
+    // Despite listing 'admin', a viewer satisfies it because viewer is the
+    // lowest threshold in the set. This is by design and is documented.
+    expect(roleMeetsThreshold('viewer', ['viewer', 'admin'])).toBe(true)
+  })
+
+  test('unknown role is denied (fail-closed); owner is a superuser', () => {
+    expect(roleMeetsThreshold('superadmin', ['viewer'])).toBe(false)
+    expect(roleMeetsThreshold('owner', [])).toBe(true)
   })
 })

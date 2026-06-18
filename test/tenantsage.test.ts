@@ -26,14 +26,28 @@ import { DocumentPolicy, PolicyContext } from '../src/policy/types'
 
 // ─── FIXTURES ─────────────────────────────────────────────────────────────────
 
+// Identity only — authority (role/family/org) lives in the assignment, not here.
 const mockClaim: TenantClaim = {
   userId:     'user-001',
   tenantId:   'tenant-A',
-  familyId:   'family-X',
-  role:       'manager',
-  orgUnit:    'engineering',
   provider:   'entra',
   verifiedAt: Date.now()
+}
+
+// Authoritative assignment fixture for identity-layer family enforcement.
+const mockAssignment: UserAssignment = {
+  assignmentId:      'asg-001',
+  assignmentVersion: 'v1',
+  userId:            'user-001',
+  tenantId:          'tenant-A',
+  organisationIds:   ['org-1'],
+  scopeIds:          [],
+  familyIds:         ['family-X'],
+  role:              'manager',
+  classificationClearance: 'restricted',
+  sensitivityClearance:    'critical',
+  source:            'test',
+  assignedAt:        new Date().toISOString(),
 }
 
 const mockDoc: DocumentPolicy = {
@@ -50,6 +64,7 @@ const mockDoc: DocumentPolicy = {
 
 const ctx = (overrides: Partial<DocumentPolicy> = {}): PolicyContext => ({
   claim:       mockClaim,
+  subjectRole: 'manager',
   document:    { ...mockDoc, ...overrides },
   requestedAt: new Date()
 })
@@ -94,12 +109,12 @@ describe('Layer 1 — TenantIsolationGuard', () => {
   })
 
   test('allows same-family access for non-owner', () => {
-    expect(() => guard.enforceFamily(mockClaim, 'family-X')).not.toThrow()
+    expect(() => guard.enforceFamily(mockAssignment, 'family-X')).not.toThrow()
   })
 
   test('owner bypasses family isolation', () => {
-    const ownerClaim = { ...mockClaim, role: 'owner' as const }
-    expect(() => guard.enforceFamily(ownerClaim, 'family-DIFFERENT')).not.toThrow()
+    const ownerAssignment = { ...mockAssignment, role: 'owner' as const }
+    expect(() => guard.enforceFamily(ownerAssignment, 'family-DIFFERENT')).not.toThrow()
   })
 
   // Security: cross-tenant
@@ -108,7 +123,7 @@ describe('Layer 1 — TenantIsolationGuard', () => {
   })
 
   test('blocks cross-family access for non-owner', () => {
-    expect(() => guard.enforceFamily(mockClaim, 'family-Y')).toThrow('FAMILY_ISOLATION')
+    expect(() => guard.enforceFamily(mockAssignment, 'family-Y')).toThrow('FAMILY_ISOLATION')
   })
 
   // QA BUG FIX: whitespace bypass was possible in original
@@ -121,7 +136,7 @@ describe('Layer 1 — TenantIsolationGuard', () => {
   })
 
   test('[QA FIX] blocks empty requestedFamilyId', () => {
-    expect(() => guard.enforceFamily(mockClaim, '')).toThrow('must not be empty')
+    expect(() => guard.enforceFamily(mockAssignment, '')).toThrow('must not be empty')
   })
 })
 
@@ -196,12 +211,12 @@ describe('Layer 2 — RolePermissionCheck', () => {
   })
 
   test('owner always passes', () => {
-    const ownerCtx = { ...ctx(), claim: { ...mockClaim, role: 'owner' as const } }
+    const ownerCtx: PolicyContext = { ...ctx(), subjectRole: 'owner' }
     expect(check.run(ownerCtx).passed).toBe(true)
   })
 
   test('fails when role is too low', () => {
-    const viewerCtx = { ...ctx(), claim: { ...mockClaim, role: 'viewer' as const } }
+    const viewerCtx: PolicyContext = { ...ctx(), subjectRole: 'viewer' }
     const result = check.run(viewerCtx)
     expect(result.passed).toBe(false)
     expect(result.failedAt).toBe('role_permission')
@@ -217,7 +232,7 @@ describe('Layer 2 — RolePermissionCheck', () => {
 
   // QA BUG FIX: unknown user role was undefined, not 0 — could cause NaN comparison
   test('[QA FIX] unknown role defaults to level 0 (denied)', () => {
-    const unknownCtx = { ...ctx(), claim: { ...mockClaim, role: 'superadmin' as any } }
+    const unknownCtx = { ...ctx(), subjectRole: 'superadmin' as any }
     const result = check.run(unknownCtx)
     expect(result.passed).toBe(false)
   })
@@ -293,7 +308,7 @@ describe('Layer 2 — PolicyEngine (full 4-gate sequence)', () => {
   })
 
   test('stops at gate 3 (role)', async () => {
-    const viewerCtx = { ...ctx(), claim: { ...mockClaim, role: 'viewer' as const } }
+    const viewerCtx: PolicyContext = { ...ctx(), subjectRole: 'viewer' }
     const result    = await engine.evaluate(viewerCtx)
     expect(result.failedAt).toBe('role_permission')
   })
@@ -539,14 +554,14 @@ describe('Layer 5 — DAREngine', () => {
     expect(Object.isFrozen(b)).toBe(true)
   })
 
-  // Correction #1: a claim cannot escalate authority. A claim asserting
-  // role:'owner' but with an authoritative 'viewer' assignment resolves to
-  // viewer authority (no wildcard, active-only).
-  test('[CORRECTION] claim role cannot escalate beyond authoritative assignment', async () => {
+  // Correction #1: the claim carries no authority at all — authority comes only
+  // from the assignment. A 'viewer' assignment yields viewer authority (no
+  // all-families, active-only) regardless of any identity presented.
+  test('[CORRECTION] claim cannot escalate beyond authoritative assignment', async () => {
     const dar = darFor('viewer')
-    const b = await dar.resolve({ ...mockClaim, role: 'owner' })
+    const b = await dar.resolve(mockClaim)
     expect(b.allowedRoles).toEqual(['viewer'])
-    expect(b.familyIds).not.toContain('*')
+    expect(b.allFamilies).toBe(false)
     expect(b.allowedStatuses).toEqual(['active'])
   })
 
@@ -617,14 +632,14 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   // A viewer-authority boundary cannot read manager+ docs.
   test('[QA FIX] viewer is denied from manager+ docs', () => {
     const viewerBoundary: EvidenceBoundary = { ...boundary, allowedRoles: ['viewer'] }
-    const r = corpus.filter([mockChunk()], { ...mockClaim, role: 'viewer' }, viewerBoundary)
+    const r = corpus.filter([mockChunk()], mockClaim, viewerBoundary)
     expect(r.chunks).toHaveLength(0)
   })
 
   test('[QA FIX] owner wildcard family sees all family chunks', () => {
     const ownerBoundary: EvidenceBoundary = { ...boundary, allFamilies: true, familyIds: [] }
     const chunk = mockChunk({ familyId: 'family-COMPLETELY-DIFFERENT' })
-    const r = corpus.filter([chunk], { ...mockClaim, role: 'owner' }, ownerBoundary)
+    const r = corpus.filter([chunk], mockClaim, ownerBoundary)
     expect(r.chunks).toHaveLength(1)
   })
 

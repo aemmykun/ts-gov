@@ -37,6 +37,15 @@ export interface EvidenceBlock {
   // chain-of-custody record.
   handoff?: HandOffManifest
 
+  // Replay provenance: proves which authority snapshot, which policy version and
+  // the exact boundary that produced this decision — so it can be reproduced
+  // years later from immutable evidence. null only for legacy/minimal commits.
+  authority: {
+    authoritySnapshotId: string
+    policyVersion:       string
+    boundaryHash:        string
+  } | null
+
   auditTrail: {
     queryHash:     string
     prevBlockHash: string

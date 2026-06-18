@@ -3,9 +3,9 @@ import { roleLevel, requiredLevel } from '../../identity/roles'
 
 export class RolePermissionCheck implements PolicyCheck {
   run(ctx: PolicyContext): PolicyCheckResult {
-    const { claim, document } = ctx
+    const { subjectRole, document } = ctx
 
-    if (claim.role === 'owner') return { passed: true }
+    if (subjectRole === 'owner') return { passed: true }
 
     const allowed = document.allowedRoles ?? []
 
@@ -20,12 +20,12 @@ export class RolePermissionCheck implements PolicyCheck {
       }
     }
 
-    const subject = roleLevel(claim.role)
+    const subject = roleLevel(subjectRole)
     if (subject === 0 || subject < required) {
       return {
         passed:   false,
         failedAt: 'role_permission',
-        reason:   `Role '${claim.role}' insufficient for document ${document.documentId}`,
+        reason:   `Role '${subjectRole}' insufficient for document ${document.documentId}`,
       }
     }
 

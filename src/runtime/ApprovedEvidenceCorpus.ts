@@ -1,5 +1,5 @@
 import { TenantClaim } from '../identity/types'
-import { Role, roleLevel, roleSatisfies } from '../identity/roles'
+import { Role, roleLevel, roleMeetsThreshold } from '../identity/roles'
 import { DocumentStatus } from '../policy/types'
 import {
   Classification, Sensitivity, classificationWithin, sensitivityWithin,
@@ -10,6 +10,8 @@ export type Visibility = 'private' | 'family' | 'tenant' | 'public'
 
 export interface ChunkGovernance {
   status:        DocumentStatus
+  // MINIMUM-THRESHOLD set, not an OR allow-list: the lowest-privilege role here
+  // (and any role above it) may access the chunk. See roleMeetsThreshold().
   allowedRoles:  Role[]
   visibility:    Visibility
   // Correction #3 — additional governance dimensions enforced here too.
@@ -140,7 +142,7 @@ export class ApprovedEvidenceCorpus {
 
     // Authoritative role hierarchy.
     if (!effectiveRole) return 'no-authoritative-role'
-    if (!roleSatisfies(effectiveRole, g.allowedRoles)) return 'role-insufficient'
+    if (!roleMeetsThreshold(effectiveRole, g.allowedRoles)) return 'role-insufficient'
 
     // Legal hold — held evidence is never retrievable.
     if (g.legalHold === true) return 'legal-hold'

@@ -19,6 +19,7 @@ export class ChainVerifier {
       contextRetrieved: b.contextRetrieved,
       aiOutput:         b.aiOutput,
       handoff:          b.handoff ?? null,
+      authority:        b.authority ?? null,
       queryHash:        b.auditTrail.queryHash,
       prevBlockHash:    b.auditTrail.prevBlockHash,
     }))

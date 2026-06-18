@@ -23,6 +23,9 @@ export interface DocumentPolicy {
 
 export interface PolicyContext {
   claim:       TenantClaim
+  // Authoritative role resolved from the assignment store (NOT from the claim).
+  // Identity establishes who; this establishes authority.
+  subjectRole: Role
   document:    DocumentPolicy
   requestedAt: Date
 }
