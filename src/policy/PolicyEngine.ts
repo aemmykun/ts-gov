@@ -1,4 +1,4 @@
-import { AuditLockService } from './AuditLockService'
+import { AuditLockSink } from './AuditLockService'
 import { PolicyCheck, PolicyContext, PolicyCheckResult } from './types'
 import { TenantBoundaryCheck } from './checks/TenantBoundaryCheck'
 import { ScopeCheck } from './checks/ScopeCheck'
@@ -20,7 +20,7 @@ function isValidDate(d: unknown): d is Date {
 export class PolicyEngine {
   private gates: PolicyCheck[]
 
-  constructor(private auditLock: AuditLockService) {
+  constructor(private auditLock: AuditLockSink) {
     this.gates = [
       new TenantBoundaryCheck(),
       new ScopeCheck(),
@@ -45,7 +45,7 @@ export class PolicyEngine {
       const result = gate.run(ctx)
       if (!result.passed) {
         if (result.failedAt === 'legal_hold' && result.auditLocked) {
-          this.auditLock.lock(
+          await this.auditLock.lock(
             ctx.resource.resourceId,
             ctx.resource.tenantId,
             result.reason ?? 'legal hold',

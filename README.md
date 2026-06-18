@@ -131,12 +131,49 @@ interface EvidenceBoundary {
 - **Ledger** — `EvidenceLedger` / `BlockBuilder` / `ChainVerifier` /
   `ReplayEngine` (ALLOW/DENY, hash-chained, replayable).
 
+## Postgres persistence (`src/persistence`)
+
+The in-memory stores are the reference/test defaults; the `src/persistence` layer
+implements the same governance interfaces against the canonical `schema.sql`. All
+work runs through `PgContext.withTenant()`, which opens a transaction and sets the
+`app.tenant_id` / `app.family_id` / `app.child_id` GUCs **LOCAL** (and optionally
+`SET LOCAL ROLE` to a least-privileged app role), so **RLS is the enforcing
+control** — not application filtering.
+
+| Interface | Postgres implementation | Table(s) |
+| --- | --- | --- |
+| `AssignmentResolver` | `PostgresAssignmentResolver` | `user_assignments` |
+| `TopicPolicyProvider` | `PostgresTopicPolicyProvider` | `policies` |
+| `GovernancePolicyProvider` | `PostgresGovernancePolicyProvider` | `rag_sources`, `policy_versions` |
+| `VectorIndex` | `PostgresVectorIndex` | `rag_chunks` (pgvector `<=>`) |
+| `LedgerStore` | `PostgresLedgerStore` | `evidence_ledger` |
+| `LedgerLock` | `PostgresLedgerLock` | `pg_advisory_lock` (distributed-safe commits) |
+| `AuditLockSink` | `PostgresAuditLockService` | `audit_locks` |
+| — | `PostgresAuthorityStore` | `authority_snapshots`, `dar_decisions` |
+| — | `PostgresPolicyVersionStore` | `policy_versions` |
+| — | `PostgresHandoffStore` | `handoff_manifests` |
+
+`EvidenceLedger` takes an optional `LedgerLock`; inject `PostgresLedgerLock` so
+concurrent commits are serialised per tenant across processes (the in-process
+lock only protects a single instance).
+
+```ts
+const pg = new PgContext({ pool, appRole: 'tenantsage_app' })
+const ledger = new EvidenceLedger(new PostgresLedgerStore(pg), new PostgresLedgerLock(pool))
+const dar = new DAREngine(new PostgresAssignmentResolver(pg), new PostgresTopicPolicyProvider(pg))
+const rag = new TrustRAGRetriever(new PostgresVectorIndex(pg))
+```
+
 ## Develop
 
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # jest (101 tests)
+npm test            # jest (101 unit tests; Postgres integration suite auto-skips)
 npm run test:coverage
 npm run build       # emit to dist/
+
+# Integration tests run against a real Postgres with the vector + pgcrypto
+# extensions (e.g. docker run -p 5432:5432 pgvector/pgvector:pg16):
+DATABASE_URL=postgres://postgres:pw@localhost:5432/tsdb npm run test:integration
 ```

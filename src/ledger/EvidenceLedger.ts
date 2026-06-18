@@ -2,6 +2,7 @@ import { BlockBuilder, BlockInput } from './BlockBuilder'
 import { LedgerStore }              from './LedgerStore'
 import { ChainVerifier }            from './ChainVerifier'
 import { ReplayEngine }             from './ReplayEngine'
+import { LedgerLock, InProcessLedgerLock } from './LedgerLock'
 import { EvidenceBlock, ReplayResult, ChainVerifyResult } from './types'
 
 export class EvidenceLedger {
@@ -9,26 +10,22 @@ export class EvidenceLedger {
   verifier:         ChainVerifier
   replay:           ReplayEngine
 
-  // QA FIX 1: In-process commit mutex — prevents race condition where two simultaneous
-  // commits both read the same prevBlock and create forked chains
-  private commitLocks: Map<string, Promise<EvidenceBlock>> = new Map()
+  // Per-tenant commit lock — prevents a race where two simultaneous commits read
+  // the same prevBlock and fork the chain. Defaults to an in-process mutex;
+  // inject a Postgres advisory-lock implementation for distributed safety.
+  private lock: LedgerLock
 
-  constructor(private store: LedgerStore) {
+  constructor(private store: LedgerStore, lock: LedgerLock = new InProcessLedgerLock()) {
     this.builder  = new BlockBuilder()
     this.verifier = new ChainVerifier(store)
     this.replay   = new ReplayEngine(store, this.verifier)
+    this.lock     = lock
   }
 
   async commit(
     input: Omit<BlockInput, 'prevBlock' | 'blockNumber'>
   ): Promise<EvidenceBlock> {
-    const tenantId = input.claim.tenantId
-
-    // QA FIX 2: Chain commits per tenant — wait for any in-flight commit to finish first
-    const existing = this.commitLocks.get(tenantId) ?? Promise.resolve(null as any)
-    const next = existing.catch(() => null).then(() => this._doCommit(input))
-    this.commitLocks.set(tenantId, next)
-    return next
+    return this.lock.withLock(input.claim.tenantId, () => this._doCommit(input))
   }
 
   private async _doCommit(
@@ -46,6 +43,7 @@ export class EvidenceLedger {
     // — it's a best-effort backward pointer; chain integrity is proven via prevHash
     if (prevBlock) {
       await this.store.updateNextHash(
+        tenantId,
         prevBlock.blockId,
         newBlock.auditTrail.currentHash
       ).catch(err =>

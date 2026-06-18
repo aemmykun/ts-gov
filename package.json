@@ -8,16 +8,19 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "jest",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "test:integration": "jest test/postgres.integration.test.ts"
   },
   "dependencies": {
     "jsonwebtoken": "9.0.2",
-    "jwks-rsa": "3.1.0"
+    "jwks-rsa": "3.1.0",
+    "pg": "8.11.5"
   },
   "devDependencies": {
     "@types/jest": "29.5.12",
     "@types/jsonwebtoken": "9.0.6",
     "@types/node": "20.14.9",
+    "@types/pg": "8.11.6",
     "jest": "29.7.0",
     "ts-jest": "29.1.5",
     "typescript": "5.4.5"
