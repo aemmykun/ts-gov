@@ -1,6 +1,5 @@
 import { EvidenceBoundary } from '../dar/types'
 import { ApprovedEvidenceCorpus, GovernedChunk, FilterOptions } from '../runtime/ApprovedEvidenceCorpus'
-import { TenantClaim } from '../identity/types'
 import { RetrievalPredicate, VectorIndex } from './types'
 
 export class UnauthorizedRetrievalError extends Error {
@@ -16,7 +15,8 @@ export interface RetrievalResult {
   filteredCount: number
 }
 
-// Governed retrieval. Correction #5:
+// Governed retrieval. The single canonical enforcement point (the in-memory
+// analogue of the SQL `search_rag_chunks_audited()`):
 //  - the DAR boundary is compiled into a deterministic predicate;
 //  - an empty boundary fails closed (no search is performed);
 //  - the index is only ever queried *within* the predicate — never unrestricted;
@@ -28,22 +28,21 @@ export class TrustRAGRetriever {
 
   // Pure, deterministic compilation of authority → predicate.
   compilePredicate(boundary: EvidenceBoundary): RetrievalPredicate {
-    const denyAll = Boolean(boundary.empty) || boundary.tenantIds.length === 0
+    const denyAll = Boolean(boundary.empty) || boundary.scopes.length === 0
     return {
-      tenantIds:         [...boundary.tenantIds],
-      familyIds:         [...boundary.familyIds],
-      allowedStatuses:   [...boundary.allowedStatuses],
-      allowedRoleNames:  [...boundary.allowedRoles],
-      maxClassification: boundary.maxClassification,
-      maxSensitivity:    boundary.maxSensitivity,
+      tenantId:        boundary.tenantId,
+      scopes:          boundary.scopes.map(s => ({ ...s })),
+      eligibleTopics:  [...boundary.eligibleTopics],
+      allowedStatuses: [...boundary.allowedStatuses],
       denyAll,
     }
   }
 
-  async retrieve(
+  // Canonical governed retrieval. Authority is derived entirely from the
+  // boundary — the identity claim never enters retrieval.
+  async searchRagChunksAudited(
     embedding: number[],
     topK: number,
-    claim: TenantClaim,
     boundary: EvidenceBoundary,
     options: FilterOptions = {},
   ): Promise<RetrievalResult> {
@@ -57,12 +56,22 @@ export class TrustRAGRetriever {
     const raw = await this.index.searchWithin({ embedding, topK, predicate })
 
     // Defence in depth: even predicate-scoped results are re-checked.
-    const result = this.corpus.filter(raw, claim, boundary, options)
+    const result = this.corpus.filter(raw, boundary, options)
 
     return {
       chunks:        result.chunks,
       predicate,
       filteredCount: result.filteredCount,
     }
+  }
+
+  // Backwards-compatible alias for the canonical enforcement entrypoint.
+  retrieve(
+    embedding: number[],
+    topK: number,
+    boundary: EvidenceBoundary,
+    options: FilterOptions = {},
+  ): Promise<RetrievalResult> {
+    return this.searchRagChunksAudited(embedding, topK, boundary, options)
   }
 }

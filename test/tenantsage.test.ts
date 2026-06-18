@@ -1,14 +1,18 @@
 /**
- * TenantSage — Full QA Test Suite
- * Tests every bug found and fixed across all 5 layers
- * Run: npx jest --coverage
+ * TenantSage — governance library test suite (canonical SQL-schema model).
+ * Hierarchy tenant → family → child; topic-based authorization;
+ * staff/supervisor/manager/admin; ACTIVE/REVOKED/EXPIRED; ALLOW/DENY ledger.
  */
 
 import { TenantIsolationGuard }  from '../src/identity/TenantIsolationGuard'
+import { roleLevel, roleAtLeast, isRole } from '../src/identity/roles'
 import { PolicyEngine }          from '../src/policy/PolicyEngine'
+import { TenantBoundaryCheck }   from '../src/policy/checks/TenantBoundaryCheck'
+import { ScopeCheck }            from '../src/policy/checks/ScopeCheck'
+import { TopicPermissionCheck }  from '../src/policy/checks/TopicPermissionCheck'
+import { StatusCheck }           from '../src/policy/checks/StatusCheck'
 import { RetentionCheck }        from '../src/policy/checks/RetentionCheck'
 import { LegalHoldCheck }        from '../src/policy/checks/LegalHoldCheck'
-import { RolePermissionCheck }   from '../src/policy/checks/RolePermissionCheck'
 import { EffectiveDateCheck }    from '../src/policy/checks/EffectiveDateCheck'
 import { AuditLockService }      from '../src/policy/AuditLockService'
 import { BlockBuilder }          from '../src/ledger/BlockBuilder'
@@ -17,613 +21,568 @@ import { ChainVerifier }         from '../src/ledger/ChainVerifier'
 import { InMemoryLedgerStore }   from '../src/ledger/LedgerStore'
 import { DAREngine }             from '../src/dar/DAREngine'
 import { InMemoryAssignmentResolver } from '../src/assignments/InMemoryAssignmentResolver'
+import { InMemoryTopicPolicyProvider } from '../src/policy/TopicPolicyProvider'
 import { UserAssignment }        from '../src/assignments/types'
 import { EvidenceBoundary }      from '../src/dar/types'
 import { ApprovedEvidenceCorpus, GovernedChunk } from '../src/runtime/ApprovedEvidenceCorpus'
 import { TenantClaim }           from '../src/identity/types'
-import { Role }                  from '../src/identity/roles'
-import { DocumentPolicy, PolicyContext } from '../src/policy/types'
+import { PolicyContext, PolicyResource } from '../src/policy/types'
 
 // ─── FIXTURES ─────────────────────────────────────────────────────────────────
+
+const PAST   = new Date(Date.now() - 86_400_000)
+const FUTURE = new Date(Date.now() + 86_400_000 * 365)
 
 const mockClaim: TenantClaim = {
   userId:     'user-001',
   tenantId:   'tenant-A',
-  familyId:   'family-X',
-  role:       'manager',
-  orgUnit:    'engineering',
   provider:   'entra',
-  verifiedAt: Date.now()
+  verifiedAt: Date.now(),
 }
 
-const mockDoc: DocumentPolicy = {
-  documentId:    'doc-001',
-  tenantId:      'tenant-A',
-  familyId:      'family-X',
-  retainUntil:   new Date(Date.now() + 86_400_000 * 365),
-  legalHold:     false,
-  allowedRoles:  ['owner', 'admin', 'manager'],
-  effectiveFrom: new Date(Date.now() - 86_400_000),
-  effectiveTo:   new Date(Date.now() + 86_400_000 * 365),
-  status:        'active'
-}
-
-const ctx = (overrides: Partial<DocumentPolicy> = {}): PolicyContext => ({
-  claim:       mockClaim,
-  document:    { ...mockDoc, ...overrides },
-  requestedAt: new Date()
+const mockAssignment = (overrides: Partial<UserAssignment> = {}): UserAssignment => ({
+  assignmentId:      'asg-001',
+  assignmentVersion: 'v1',
+  userId:            'user-001',
+  tenantId:          'tenant-A',
+  familyId:          'family-X',
+  childId:           null,
+  role:              'manager',
+  startedAt:         new Date().toISOString(),
+  endedAt:           null,
+  source:            'test',
+  ...overrides,
 })
 
-const baseCommit = {
-  claim:        mockClaim,
-  policyResult: { passed: true },
-  ruleVersion:  '4.1',
-  documentIds:  ['doc-001'],
-  chunkIds:     ['chunk-001'],
-  contextText:  'some context',
-  aiResponse:   'AI response text',
-  modelUsed:    'claude-sonnet-4-6',
-  tokenCount:   512,
-  queryText:    'What is the retention policy?'
-}
+// A resolved authority boundary granting family-X + topics maintenance/billing.
+const mockBoundary = (overrides: Partial<EvidenceBoundary> = {}): EvidenceBoundary => ({
+  tenantId:            'tenant-A',
+  scopes:              [{ familyId: 'family-X', childId: null }],
+  eligibleTopics:      ['billing', 'maintenance'],
+  allowedStatuses:     ['ACTIVE'],
+  roleLevel:           3,
+  authoritySnapshotId: 'snap-1',
+  policyVersion:       '2026.06',
+  effectiveAt:         new Date().toISOString(),
+  computedAt:          new Date().toISOString(),
+  empty:               false,
+  ...overrides,
+})
+
+const mockResource = (overrides: Partial<PolicyResource> = {}): PolicyResource => ({
+  resourceId:    'chunk-001',
+  tenantId:      'tenant-A',
+  familyId:      'family-X',
+  childId:       null,
+  topicKey:      'maintenance',
+  status:        'ACTIVE',
+  legalHold:     false,
+  validFrom:     PAST,
+  validTo:       FUTURE,
+  policyVersion: '2026.06',
+  ...overrides,
+})
+
+const ctx = (resource: Partial<PolicyResource> = {}, boundary: Partial<EvidenceBoundary> = {}): PolicyContext => ({
+  claim:       mockClaim,
+  boundary:    mockBoundary(boundary),
+  resource:    mockResource(resource),
+  requestedAt: new Date(),
+})
 
 const mockChunk = (overrides: Partial<GovernedChunk> = {}): GovernedChunk => ({
-  chunkId:  'c1',
-  sourceId: 's1',
-  tenantId: 'tenant-A',
-  familyId: 'family-X',
-  content:  'chunk content',
-  governance: {
-    status:       'active',
-    allowedRoles: ['owner', 'admin', 'manager'],
-    visibility:   'tenant'
-  },
-  ...overrides
+  chunkId:   'c1',
+  sourceId:  's1',
+  tenantId:  'tenant-A',
+  familyId:  'family-X',
+  childId:   null,
+  topicKey:  'maintenance',
+  status:    'ACTIVE',
+  legalHold: false,
+  validFrom: PAST,
+  validTo:   FUTURE,
+  content:   'chunk content',
+  ...overrides,
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LAYER 1 — IDENTITY
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe('roles', () => {
+  test('canonical ordering staff < supervisor < manager < admin', () => {
+    expect(roleLevel('staff')).toBeLessThan(roleLevel('supervisor'))
+    expect(roleLevel('supervisor')).toBeLessThan(roleLevel('manager'))
+    expect(roleLevel('manager')).toBeLessThan(roleLevel('admin'))
+  })
+
+  test('unknown role resolves to level 0 (fail-closed)', () => {
+    expect(roleLevel('owner')).toBe(0)
+    expect(roleLevel(undefined)).toBe(0)
+    expect(isRole('owner')).toBe(false)
+    expect(isRole('admin')).toBe(true)
+  })
+
+  test('roleAtLeast respects hierarchy and fails closed on unknown', () => {
+    expect(roleAtLeast('manager', 'supervisor')).toBe(true)
+    expect(roleAtLeast('staff', 'manager')).toBe(false)
+    expect(roleAtLeast('nope', 'staff')).toBe(false)
+  })
+})
+
 describe('Layer 1 — TenantIsolationGuard', () => {
   const guard = new TenantIsolationGuard()
 
-  // Happy path
   test('allows same-tenant access', () => {
     expect(() => guard.enforce(mockClaim, 'tenant-A')).not.toThrow()
   })
 
-  test('allows same-family access for non-owner', () => {
-    expect(() => guard.enforceFamily(mockClaim, 'family-X')).not.toThrow()
-  })
-
-  test('owner bypasses family isolation', () => {
-    const ownerClaim = { ...mockClaim, role: 'owner' as const }
-    expect(() => guard.enforceFamily(ownerClaim, 'family-DIFFERENT')).not.toThrow()
-  })
-
-  // Security: cross-tenant
   test('blocks cross-tenant access', () => {
     expect(() => guard.enforce(mockClaim, 'tenant-B')).toThrow('TENANT_ISOLATION')
   })
 
-  test('blocks cross-family access for non-owner', () => {
-    expect(() => guard.enforceFamily(mockClaim, 'family-Y')).toThrow('FAMILY_ISOLATION')
-  })
-
-  // QA BUG FIX: whitespace bypass was possible in original
-  test('[QA FIX] blocks whitespace-padded tenant ID bypass', () => {
+  test('whitespace-padded tenant id does not bypass', () => {
     expect(() => guard.enforce(mockClaim, ' tenant-A ')).not.toThrow()
   })
 
-  test('[QA FIX] blocks empty requestedTenantId', () => {
+  test('blocks empty requestedTenantId', () => {
     expect(() => guard.enforce(mockClaim, '')).toThrow('must not be empty')
   })
 
-  test('[QA FIX] blocks empty requestedFamilyId', () => {
-    expect(() => guard.enforceFamily(mockClaim, '')).toThrow('must not be empty')
+  test('allows same-family access via family-level assignment', () => {
+    expect(() => guard.enforceScope([mockAssignment()], 'family-X')).not.toThrow()
+  })
+
+  test('blocks cross-family access', () => {
+    expect(() => guard.enforceScope([mockAssignment()], 'family-Y')).toThrow('SCOPE_ISOLATION')
+  })
+
+  test('child-scoped assignment authorises only that child', () => {
+    const asg = [mockAssignment({ childId: 'child-1' })]
+    expect(() => guard.enforceScope(asg, 'family-X', 'child-1')).not.toThrow()
+    expect(() => guard.enforceScope(asg, 'family-X', 'child-2')).toThrow('SCOPE_ISOLATION')
+  })
+
+  test('family-level assignment authorises any child', () => {
+    expect(() => guard.enforceScope([mockAssignment()], 'family-X', 'child-9')).not.toThrow()
+  })
+
+  test('blocks empty requestedFamilyId', () => {
+    expect(() => guard.enforceScope([mockAssignment()], '')).toThrow('must not be empty')
+  })
+
+  test('no assignments denies all scope access', () => {
+    expect(() => guard.enforceScope([], 'family-X')).toThrow('SCOPE_ISOLATION')
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAYER 2 — POLICY ENGINE
+// LAYER 2 — POLICY GATES
 // ─────────────────────────────────────────────────────────────────────────────
+
+describe('Layer 2 — TenantBoundaryCheck', () => {
+  const check = new TenantBoundaryCheck()
+  test('passes same-tenant resource', () => {
+    expect(check.run(ctx()).passed).toBe(true)
+  })
+  test('fails cross-tenant resource', () => {
+    const r = check.run(ctx({ tenantId: 'tenant-B' }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('tenant_boundary')
+  })
+})
+
+describe('Layer 2 — ScopeCheck', () => {
+  const check = new ScopeCheck()
+  test('passes in-scope resource', () => {
+    expect(check.run(ctx()).passed).toBe(true)
+  })
+  test('fails out-of-family resource', () => {
+    const r = check.run(ctx({ familyId: 'family-Y' }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('scope')
+  })
+  test('family-level grant covers child resource', () => {
+    expect(check.run(ctx({ childId: 'child-7' })).passed).toBe(true)
+  })
+  test('child-scoped grant rejects sibling child', () => {
+    const r = check.run(ctx(
+      { childId: 'child-2' },
+      { scopes: [{ familyId: 'family-X', childId: 'child-1' }] },
+    ))
+    expect(r.passed).toBe(false)
+  })
+})
+
+describe('Layer 2 — TopicPermissionCheck', () => {
+  const check = new TopicPermissionCheck()
+  test('passes eligible topic', () => {
+    expect(check.run(ctx({ topicKey: 'billing' })).passed).toBe(true)
+  })
+  test('fails ineligible topic', () => {
+    const r = check.run(ctx({ topicKey: 'legal' }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('topic_permission')
+  })
+  test('empty eligible topics denies everything (fail-closed)', () => {
+    const r = check.run(ctx({}, { eligibleTopics: [] }))
+    expect(r.passed).toBe(false)
+  })
+})
+
+describe('Layer 2 — StatusCheck', () => {
+  const check = new StatusCheck()
+  test('passes ACTIVE', () => {
+    expect(check.run(ctx({ status: 'ACTIVE' })).passed).toBe(true)
+  })
+  test('fails REVOKED', () => {
+    const r = check.run(ctx({ status: 'REVOKED' }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('status')
+  })
+  test('fails EXPIRED', () => {
+    expect(check.run(ctx({ status: 'EXPIRED' })).passed).toBe(false)
+  })
+})
 
 describe('Layer 2 — RetentionCheck', () => {
   const check = new RetentionCheck()
-
-  test('passes active document within retention window', () => {
+  test('passes within retention window', () => {
     expect(check.run(ctx()).passed).toBe(true)
   })
-
+  test('passes null validTo (retain indefinitely)', () => {
+    expect(check.run(ctx({ validTo: null })).passed).toBe(true)
+  })
   test('fails expired retention', () => {
-    const result = check.run(ctx({ retainUntil: new Date(Date.now() - 1000) }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('retention')
+    const r = check.run(ctx({ validTo: new Date(Date.now() - 1000) }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('retention')
   })
-
-  // QA BUG FIX: original crashed on null retainUntil
-  test('[QA FIX] fails gracefully on null retainUntil', () => {
-    const result = check.run(ctx({ retainUntil: null as any }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('retention')
-  })
-
-  test('[QA FIX] fails gracefully on invalid Date retainUntil', () => {
-    const result = check.run(ctx({ retainUntil: new Date('not-a-date') }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('retention')
+  test('fails invalid validTo (fail-closed)', () => {
+    const r = check.run(ctx({ validTo: new Date('not-a-date') }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('retention')
   })
 })
 
 describe('Layer 2 — LegalHoldCheck', () => {
   const check = new LegalHoldCheck()
-
   test('passes when no legal hold', () => {
     expect(check.run(ctx({ legalHold: false })).passed).toBe(true)
   })
-
   test('fails and sets auditLocked when hold is active', () => {
-    const result = check.run(ctx({ legalHold: true, legalHoldReason: 'Litigation 2024' }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('legal_hold')
-    expect(result.auditLocked).toBe(true)
+    const r = check.run(ctx({ legalHold: true, legalHoldReason: 'Litigation 2026' }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('legal_hold')
+    expect(r.auditLocked).toBe(true)
+    expect(r.reason).toContain('Litigation 2026')
   })
-
-  test('includes reason in failure message', () => {
-    const result = check.run(ctx({ legalHold: true, legalHoldReason: 'GDPR request' }))
-    expect(result.reason).toContain('GDPR request')
+  test('truthy string is not a hold (strict boolean)', () => {
+    expect(check.run(ctx({ legalHold: ('true' as unknown as boolean) })).passed).toBe(true)
   })
-
-  // QA BUG FIX: truthy string '1' or 'true' was bypassing original strict check
-  test('[QA FIX] does not treat truthy string as legalHold', () => {
-    const result = check.run(ctx({ legalHold: ('true' as any) }))
-    // Our fix uses === true so string 'true' is NOT a hold
-    expect(result.passed).toBe(true)
-  })
-
-  test('[QA FIX] flags missing legalHoldReason for compliance review', () => {
-    const result = check.run(ctx({ legalHold: true, legalHoldReason: undefined }))
-    expect(result.reason).toContain('compliance review')
-  })
-})
-
-describe('Layer 2 — RolePermissionCheck', () => {
-  const check = new RolePermissionCheck()
-
-  test('passes when role is sufficient', () => {
-    expect(check.run(ctx()).passed).toBe(true)
-  })
-
-  test('owner always passes', () => {
-    const ownerCtx = { ...ctx(), claim: { ...mockClaim, role: 'owner' as const } }
-    expect(check.run(ownerCtx).passed).toBe(true)
-  })
-
-  test('fails when role is too low', () => {
-    const viewerCtx = { ...ctx(), claim: { ...mockClaim, role: 'viewer' as const } }
-    const result = check.run(viewerCtx)
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('role_permission')
-  })
-
-  // QA BUG FIX: empty allowedRoles returned Infinity from Math.min and ALL roles passed
-  test('[QA FIX] fails when allowedRoles is empty array', () => {
-    const result = check.run(ctx({ allowedRoles: [] }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('role_permission')
-    expect(result.reason).toContain('fail-closed')
-  })
-
-  // QA BUG FIX: unknown user role was undefined, not 0 — could cause NaN comparison
-  test('[QA FIX] unknown role defaults to level 0 (denied)', () => {
-    const unknownCtx = { ...ctx(), claim: { ...mockClaim, role: 'superadmin' as any } }
-    const result = check.run(unknownCtx)
-    expect(result.passed).toBe(false)
+  test('flags missing reason for compliance review', () => {
+    const r = check.run(ctx({ legalHold: true, legalHoldReason: undefined }))
+    expect(r.reason).toContain('compliance review')
   })
 })
 
 describe('Layer 2 — EffectiveDateCheck', () => {
   const check = new EffectiveDateCheck()
-
-  test('passes active document in valid date range', () => {
+  test('passes effective resource', () => {
     expect(check.run(ctx()).passed).toBe(true)
   })
-
-  test('fails expired document', () => {
-    const result = check.run(ctx({ effectiveTo: new Date(Date.now() - 1000) }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('effective_date')
+  test('fails not-yet-effective resource', () => {
+    const r = check.run(ctx({ validFrom: new Date(Date.now() + 86_400_000) }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('effective_date')
   })
-
-  test('fails not-yet-effective document', () => {
-    const result = check.run(ctx({ effectiveFrom: new Date(Date.now() + 86_400_000) }))
-    expect(result.passed).toBe(false)
-    expect(result.failedAt).toBe('effective_date')
-  })
-
-  test('fails quarantined document', () => {
-    const result = check.run(ctx({ status: 'quarantined' }))
-    expect(result.passed).toBe(false)
-  })
-
-  // QA BUG FIX: original checked dates before status — quarantined doc with future date passed
-  test('[QA FIX] status check runs before date range check', () => {
-    const result = check.run(ctx({
-      status:        'quarantined',
-      effectiveFrom: new Date(Date.now() - 86_400_000),
-      effectiveTo:   new Date(Date.now() + 86_400_000)
-    }))
-    expect(result.passed).toBe(false)
-    expect(result.reason).toContain('quarantined')
-  })
-
-  // QA BUG FIX: effectiveFrom > effectiveTo is data error
-  test('[QA FIX] fails when effectiveFrom is after effectiveTo (data integrity)', () => {
-    const future = new Date(Date.now() + 86_400_000)
-    const past   = new Date(Date.now() - 86_400_000)
-    const result = check.run(ctx({ effectiveFrom: future, effectiveTo: past }))
-    expect(result.passed).toBe(false)
-    expect(result.reason).toContain('integrity error')
-  })
-
-  test('[QA FIX] fails gracefully on invalid effectiveFrom date', () => {
-    const result = check.run(ctx({ effectiveFrom: new Date('invalid') }))
-    expect(result.passed).toBe(false)
-    expect(result.reason).toContain('invalid')
+  test('fails invalid validFrom (fail-closed)', () => {
+    const r = check.run(ctx({ validFrom: new Date('nope') }))
+    expect(r.passed).toBe(false)
+    expect(r.failedAt).toBe('effective_date')
   })
 })
 
-describe('Layer 2 — PolicyEngine (full 4-gate sequence)', () => {
-  const engine = new PolicyEngine(new AuditLockService())
+describe('Layer 2 — PolicyEngine (ordered gates)', () => {
+  let auditLock: AuditLockService
+  let engine: PolicyEngine
+  beforeEach(() => {
+    auditLock = new AuditLockService()
+    engine = new PolicyEngine(auditLock)
+  })
 
-  test('all 4 gates pass for valid document', async () => {
+  test('ALLOW when every gate passes', async () => {
     expect((await engine.evaluate(ctx())).passed).toBe(true)
   })
 
-  test('stops at gate 1 (retention)', async () => {
-    const result = await engine.evaluate(ctx({ retainUntil: new Date(Date.now() - 1) }))
-    expect(result.failedAt).toBe('retention')
+  test('tenant gate short-circuits first', async () => {
+    const r = await engine.evaluate(ctx({ tenantId: 'tenant-B', topicKey: 'legal' }))
+    expect(r.failedAt).toBe('tenant_boundary')
   })
 
-  test('stops at gate 2 (legal hold)', async () => {
-    const result = await engine.evaluate(ctx({ legalHold: true }))
-    expect(result.failedAt).toBe('legal_hold')
-    expect(result.auditLocked).toBe(true)
+  test('legal hold fires an audit lock with provenance', async () => {
+    const c = ctx({ legalHold: true, legalHoldReason: 'hold' })
+    c.provenance = { authoritySnapshotId: 'snap-1', boundaryHash: 'bh' }
+    const r = await engine.evaluate(c)
+    expect(r.failedAt).toBe('legal_hold')
+    const locks = auditLock.list()
+    expect(locks).toHaveLength(1)
+    expect(locks[0].authoritySnapshotId).toBe('snap-1')
+    expect(locks[0].policyVersion).toBe('2026.06')
+    expect(locks[0].boundaryHash).toBe('bh')
   })
 
-  test('stops at gate 3 (role)', async () => {
-    const viewerCtx = { ...ctx(), claim: { ...mockClaim, role: 'viewer' as const } }
-    const result    = await engine.evaluate(viewerCtx)
-    expect(result.failedAt).toBe('role_permission')
+  test('fail-closed on malformed context', async () => {
+    // @ts-expect-error intentionally malformed
+    expect((await engine.evaluate(null)).passed).toBe(false)
   })
+})
 
-  test('stops at gate 4 (effective date)', async () => {
-    const result = await engine.evaluate(ctx({ effectiveTo: new Date(Date.now() - 1) }))
-    expect(result.failedAt).toBe('effective_date')
-  })
-
-  // QA FIX: PolicyEngine must handle null context gracefully
-  test('[QA FIX] handles null context gracefully', async () => {
-    const result = await engine.evaluate(null as any)
-    expect(result.passed).toBe(false)
-  })
-
-  test('[QA FIX] handles invalid requestedAt Date', async () => {
-    const badCtx = { ...ctx(), requestedAt: new Date('bad-date') }
-    const result = await engine.evaluate(badCtx)
-    expect(result.passed).toBe(false)
+describe('Layer 2 — AuditLockService', () => {
+  test('records what/who/why/when plus provenance', () => {
+    const svc = new AuditLockService()
+    const rec = svc.lock('chunk-1', 'tenant-A', 'hold', { policyVersion: 'p1' })
+    expect(rec.documentId).toBe('chunk-1')
+    expect(rec.tenantId).toBe('tenant-A')
+    expect(rec.reason).toBe('hold')
+    expect(rec.lockedAt).toBeTruthy()
+    expect(rec.policyVersion).toBe('p1')
   })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
-// LAYER 4 — EVIDENCE LEDGER
+// LAYER 3 — DAR
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Layer 4 — BlockBuilder', () => {
-  const builder = new BlockBuilder()
-  const input   = { ...baseCommit, prevBlock: null, blockNumber: 1 }
-
-  test('builds block with all 5 datapoints', () => {
-    const block = builder.build(input)
-    expect(block.userIdentity).toBeDefined()
-    expect(block.policyRules).toBeDefined()
-    expect(block.contextRetrieved).toBeDefined()
-    expect(block.aiOutput).toBeDefined()
-    expect(block.auditTrail).toBeDefined()
-  })
-
-  test('first block has GENESIS prevBlockHash', () => {
-    expect(builder.build(input).auditTrail.prevBlockHash).toBe('GENESIS')
-  })
-
-  test('stores hash not raw AI response', () => {
-    const block = builder.build(input)
-    expect(block.aiOutput.responseHash).not.toBe('AI response text')
-    expect(block.aiOutput.responseHash).toHaveLength(64)
-  })
-
-  test('links block 2 to block 1 via prevBlockHash', () => {
-    const b1 = builder.build(input)
-    const b2 = builder.build({ ...input, prevBlock: b1, blockNumber: 2 })
-    expect(b2.auditTrail.prevBlockHash).toBe(b1.auditTrail.blockChecksum)
-  })
-
-  // QA BUG FIX: canonical JSON must produce stable checksums
-  test('[QA FIX] canonical JSON produces same checksum regardless of key insertion order', () => {
-    const obj1 = { b: 2, a: 1 }
-    const obj2 = { a: 1, b: 2 }
-    expect(builder.canonicalJson(obj1)).toBe(builder.canonicalJson(obj2))
-  })
-
-  test('[QA FIX] nested objects in canonical JSON are also sorted', () => {
-    const obj1 = { z: { b: 2, a: 1 }, a: 0 }
-    const obj2 = { a: 0, z: { a: 1, b: 2 } }
-    expect(builder.canonicalJson(obj1)).toBe(builder.canonicalJson(obj2))
-  })
-})
-
-describe('Layer 4 — EvidenceLedger + ChainVerifier', () => {
-  let store:  InMemoryLedgerStore
-  let ledger: EvidenceLedger
-
-  beforeEach(() => {
-    store  = new InMemoryLedgerStore()
-    ledger = new EvidenceLedger(store)
-  })
-
-  test('first block has blockNumber 1', async () => {
-    const b = await ledger.commit(baseCommit)
-    expect(b.blockNumber).toBe(1)
-  })
-
-  test('blocks are sequential', async () => {
-    const b1 = await ledger.commit(baseCommit)
-    const b2 = await ledger.commit(baseCommit)
-    const b3 = await ledger.commit(baseCommit)
-    expect([b1.blockNumber, b2.blockNumber, b3.blockNumber]).toEqual([1, 2, 3])
-  })
-
-  test('chain passes verification after 5 blocks', async () => {
-    for (let i = 0; i < 5; i++) await ledger.commit(baseCommit)
-    const result = await ledger.verifyChain('tenant-A', 1, 5)
-    expect(result.valid).toBe(true)
-    expect(result.totalBlocks).toBe(5)
-  })
-
-  test('tampered block is detected by chain verifier', async () => {
-    await ledger.commit(baseCommit)
-    await ledger.commit(baseCommit)
-
-    // Simulate tamper using typed helper
-    store.tamperBlock('tenant-A', 1, b => { b.userIdentity.userId = 'attacker' })
-
-    const result = await ledger.verifyChain('tenant-A', 1, 2)
-    expect(result.valid).toBe(false)
-    expect(result.brokenAt).toBe(1)
-  })
-
-  test('replay returns approved decision for passing policy', async () => {
-    await ledger.commit(baseCommit)
-    const result = await ledger.replayBlock('tenant-A', 1)
-    expect(result.policyDecision).toBe('approved')
-    expect(result.chainIntegrity).toBe('valid')
-  })
-
-  test('replay returns denied for failed policy commit', async () => {
-    await ledger.commit({
-      ...baseCommit,
-      policyResult: { passed: false, failedAt: 'retention', reason: 'expired' }
+describe('Layer 3 — DAREngine', () => {
+  function build() {
+    const assignments = new InMemoryAssignmentResolver()
+    const topics = new InMemoryTopicPolicyProvider()
+    topics.set({
+      policyId: 'pol-1', tenantId: 'tenant-A', role: 'manager',
+      allowedTopics: ['maintenance', 'billing'], version: '2026.06', active: true,
     })
-    const result = await ledger.replayBlock('tenant-A', 1)
-    expect(result.policyDecision).toBe('denied')
-  })
-
-  test('replay throws for non-existent block', async () => {
-    await expect(ledger.replayBlock('tenant-A', 99)).rejects.toThrow('REPLAY')
-  })
-
-  // QA BUG FIX: concurrent commits must not fork the chain
-  test('[QA FIX] concurrent commits produce sequential block numbers', async () => {
-    const [b1, b2, b3] = await Promise.all([
-      ledger.commit(baseCommit),
-      ledger.commit(baseCommit),
-      ledger.commit(baseCommit)
-    ])
-    const numbers = [b1.blockNumber, b2.blockNumber, b3.blockNumber].sort((a, b) => a - b)
-    expect(numbers).toEqual([1, 2, 3])
-  })
-
-  test('[QA FIX] updateNextHash failure does not break commit', async () => {
-    // Override updateNextHash to throw
-    store.updateNextHash = async () => { throw new Error('storage error') }
-    await expect(ledger.commit(baseCommit)).resolves.toBeDefined()
-  })
-})
-
-describe('Layer 4 — ChainVerifier (genesis + edge cases)', () => {
-  let store:    InMemoryLedgerStore
-  let ledger:   EvidenceLedger
-  let verifier: ChainVerifier
-
-  beforeEach(() => {
-    store    = new InMemoryLedgerStore()
-    ledger   = new EvidenceLedger(store)
-    verifier = new ChainVerifier(store)
-  })
-
-  test('empty range returns valid with 0 blocks', async () => {
-    const result = await verifier.verify('tenant-A', 1, 10)
-    expect(result.valid).toBe(true)
-    expect(result.totalBlocks).toBe(0)
-  })
-
-  test('single block verifies correctly', async () => {
-    await ledger.commit(baseCommit)
-    const result = await verifier.verify('tenant-A', 1, 1)
-    expect(result.valid).toBe(true)
-  })
-
-  test('[QA FIX] detects tampered checksum on middle block', async () => {
-    await ledger.commit(baseCommit)
-    await ledger.commit(baseCommit)
-    await ledger.commit(baseCommit)
-
-    store.tamperBlock('tenant-A', 2, b => { b.aiOutput.tokenCount = 99999 })
-
-    const result = await verifier.verify('tenant-A', 1, 3)
-    expect(result.valid).toBe(false)
-    expect(result.brokenAt).toBe(2)
-  })
-})
-
-// ─────────────────────────────────────────────────────────────────────────────
-// LAYER 5 — DAR + APPROVED EVIDENCE CORPUS
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe('Layer 5 — DAREngine', () => {
-  // Correction #1: authority is resolved from authoritative assignments, NOT
-  // from the JWT claim. Each test seeds the assignment store with the role
-  // under test; the claim only supplies identity (userId/tenantId).
-  const baseAssignment: Omit<UserAssignment, 'role'> = {
-    userId:     'user-001',
-    tenantId:   'tenant-A',
-    familyIds:  ['family-X'],
-    scopeIds:   [],
-    source:     'test',
-    assignedAt: new Date().toISOString(),
+    const dar = new DAREngine(assignments, topics, { policyVersion: 'fallback' })
+    return { assignments, topics, dar }
   }
 
-  const darFor = (role: Role): DAREngine =>
-    new DAREngine(new InMemoryAssignmentResolver().grant({ ...baseAssignment, role }))
-
-  test('owner gets wildcard family access', async () => {
-    const b = await darFor('owner').resolve(mockClaim)
-    expect(b.familyIds).toContain('*')
-  })
-
-  test('admin does NOT get wildcard family (own family only)', async () => {
-    const b = await darFor('admin').resolve(mockClaim)
-    expect(b.familyIds).not.toContain('*')
-    expect(b.familyIds).toContain('family-X')
-  })
-
-  test('owner + admin see quarantined docs', async () => {
-    const ownerB = await darFor('owner').resolve(mockClaim)
-    const adminB = await darFor('admin').resolve(mockClaim)
-    expect(ownerB.allowedStatuses).toContain('quarantined')
-    expect(adminB.allowedStatuses).toContain('quarantined')
-  })
-
-  test('manager/member/viewer only see active docs', async () => {
-    for (const role of ['manager', 'member', 'viewer'] as const) {
-      const b = await darFor(role).resolve(mockClaim)
-      expect(b.allowedStatuses).toEqual(['active'])
-      expect(b.allowedStatuses).not.toContain('quarantined')
-    }
-  })
-
-  test('boundary always scoped to own tenant', async () => {
-    const b = await darFor('manager').resolve(mockClaim)
-    expect(b.tenantIds).toEqual(['tenant-A'])
-  })
-
-  // QA FIX: boundary must be immutable — original returned plain object, mutable at runtime
-  test('[QA FIX] returned boundary is frozen (immutable)', async () => {
-    const b = await darFor('manager').resolve(mockClaim)
-    expect(Object.isFrozen(b)).toBe(true)
-  })
-
-  // Correction #1: a claim cannot escalate authority. A claim asserting
-  // role:'owner' but with an authoritative 'viewer' assignment resolves to
-  // viewer authority (no wildcard, active-only).
-  test('[CORRECTION] claim role cannot escalate beyond authoritative assignment', async () => {
-    const dar = darFor('viewer')
-    const b = await dar.resolve({ ...mockClaim, role: 'owner' })
-    expect(b.allowedRoles).toEqual(['viewer'])
-    expect(b.familyIds).not.toContain('*')
-    expect(b.allowedStatuses).toEqual(['active'])
-  })
-
-  // Correction #1 / #5: identity with NO authoritative assignment ⇒ empty,
-  // fail-closed boundary.
-  test('[CORRECTION] no assignment yields empty fail-closed boundary', async () => {
-    const dar = new DAREngine() // empty assignment store
+  test('no assignment ⇒ empty boundary (fail-closed)', async () => {
+    const { dar } = build()
     const b = await dar.resolve(mockClaim)
     expect(b.empty).toBe(true)
-    expect(b.tenantIds).toEqual([])
-    expect(b.allowedRoles).toEqual([])
+    expect(b.scopes).toHaveLength(0)
+    expect(b.eligibleTopics).toHaveLength(0)
+  })
+
+  test('assignment ⇒ scopes + eligible topics from policy', async () => {
+    const { assignments, dar } = build()
+    assignments.grant(mockAssignment())
+    const b = await dar.resolve(mockClaim)
+    expect(b.empty).toBe(false)
+    expect(b.scopes).toEqual([{ familyId: 'family-X', childId: null }])
+    expect(b.eligibleTopics).toEqual(['billing', 'maintenance'])
+    expect(b.allowedStatuses).toEqual(['ACTIVE'])
+    expect(b.roleLevel).toBe(3)
+    expect(b.policyVersion).toBe('2026.06')
+  })
+
+  test('multiple assignments union their scopes', async () => {
+    const { assignments, dar } = build()
+    assignments.grant(mockAssignment())
+    assignments.grant(mockAssignment({
+      assignmentId: 'asg-002', familyId: 'family-Y', childId: 'child-3',
+    }))
+    const b = await dar.resolve(mockClaim)
+    expect(b.scopes).toHaveLength(2)
+  })
+
+  test('boundary is frozen (immutable)', async () => {
+    const { assignments, dar } = build()
+    assignments.grant(mockAssignment())
+    const b = await dar.resolve(mockClaim)
+    expect(Object.isFrozen(b)).toBe(true)
+    expect(Object.isFrozen(b.scopes)).toBe(true)
+  })
+
+  test('revoked assignment is ignored', async () => {
+    const { assignments, dar } = build()
+    assignments.grant(mockAssignment())
+    assignments.revoke('user-001', 'tenant-A')
+    const b = await dar.resolve(mockClaim)
+    expect(b.empty).toBe(true)
+  })
+
+  test('authoritySnapshotId is deterministic for same assignment set', async () => {
+    const a = build(); a.assignments.grant(mockAssignment())
+    const b = build(); b.assignments.grant(mockAssignment())
+    const r1 = await a.dar.resolve(mockClaim)
+    const r2 = await b.dar.resolve(mockClaim)
+    expect(r1.authoritySnapshotId).toBe(r2.authoritySnapshotId)
   })
 })
 
-describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
-  const corpus   = new ApprovedEvidenceCorpus()
-  const boundary: EvidenceBoundary = {
-    tenantIds:       ['tenant-A'],
-    familyIds:       ['family-X'],
-    allowedStatuses: ['active'],
-    allowedRoles:    ['manager'],
-    effectiveAt:     new Date().toISOString(),
-    computedAt:      new Date().toISOString()
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 4 — APPROVED EVIDENCE CORPUS
+// ─────────────────────────────────────────────────────────────────────────────
 
-  test('approves valid chunk', () => {
-    const r = corpus.filter([mockChunk()], mockClaim, boundary)
+describe('Layer 4 — ApprovedEvidenceCorpus', () => {
+  const corpus = new ApprovedEvidenceCorpus()
+  const boundary = mockBoundary()
+
+  test('keeps a fully eligible chunk', () => {
+    const r = corpus.filter([mockChunk()], boundary)
     expect(r.chunks).toHaveLength(1)
     expect(r.filteredCount).toBe(0)
   })
 
-  test('Ghost Effect removes wrong-tenant chunk', () => {
-    const r = corpus.filter([mockChunk({ tenantId: 'tenant-B' })], mockClaim, boundary)
+  test('drops cross-tenant chunk', () => {
+    const r = corpus.filter([mockChunk({ tenantId: 'tenant-B' })], boundary)
     expect(r.chunks).toHaveLength(0)
-    expect(r.filteredCount).toBe(1)
+    expect(r.removed[0].reason).toBe('tenant-mismatch')
   })
 
-  test('Ghost Effect removes quarantined chunk', () => {
-    const r = corpus.filter(
-      [mockChunk({ governance: { status: 'quarantined', allowedRoles: ['manager'], visibility: 'tenant' } })],
-      mockClaim, boundary
-    )
+  test('drops out-of-scope chunk', () => {
+    const r = corpus.filter([mockChunk({ familyId: 'family-Y' })], boundary)
+    expect(r.removed[0].reason).toBe('scope-mismatch')
+  })
+
+  test('drops ineligible-topic chunk', () => {
+    const r = corpus.filter([mockChunk({ topicKey: 'legal' })], boundary)
+    expect(r.removed[0].reason).toBe('topic-not-eligible')
+  })
+
+  test('drops non-ACTIVE chunk', () => {
+    const r = corpus.filter([mockChunk({ status: 'REVOKED' })], boundary)
+    expect(r.removed[0].reason).toBe('status-not-allowed')
+  })
+
+  test('drops legal-hold chunk', () => {
+    const r = corpus.filter([mockChunk({ legalHold: true })], boundary)
+    expect(r.removed[0].reason).toBe('legal-hold')
+  })
+
+  test('drops not-yet-effective chunk', () => {
+    const r = corpus.filter([mockChunk({ validFrom: FUTURE })], boundary)
+    expect(r.removed[0].reason).toBe('not-yet-effective')
+  })
+
+  test('drops retention-expired chunk', () => {
+    const r = corpus.filter([mockChunk({ validTo: PAST })], boundary)
+    expect(r.removed[0].reason).toBe('retention-expired')
+  })
+
+  test('empty boundary drops everything (no-authority)', () => {
+    const r = corpus.filter([mockChunk()], mockBoundary({ empty: true, scopes: [] }))
     expect(r.chunks).toHaveLength(0)
+    expect(r.removed[0].reason).toBe('no-authority')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LAYER 5 — EVIDENCE LEDGER
+// ─────────────────────────────────────────────────────────────────────────────
+
+const baseCommit = {
+  claim:        mockClaim,
+  requestId:    'req-1',
+  decision:     'ALLOW' as const,
+  darDecisionHash: 'dar-hash',
+  retrievedEvidenceIds: ['chunk-001'],
+  promptText:   'What is the maintenance policy?',
+  responseText: 'AI response text',
+  modelUsed:    'claude-sonnet-4-6',
+  tokenCount:   512,
+  authoritySnapshotId: 'snap-1',
+  policyVersion:       '2026.06',
+  boundaryHash:        'dar-hash',
+}
+
+describe('Layer 5 — BlockBuilder', () => {
+  const builder = new BlockBuilder()
+
+  test('builds a genesis block with previousHash GENESIS', () => {
+    const b = builder.build({ ...baseCommit, prevBlock: null, blockNumber: 1 })
+    expect(b.auditTrail.previousHash).toBe('GENESIS')
+    expect(b.decision).toBe('ALLOW')
+    expect(b.promptHash).not.toBe('What is the maintenance policy?')
+    expect(b.responseHash).toBeTruthy()
   })
 
-  test('Ghost Effect removes wrong-family chunk', () => {
-    const r = corpus.filter([mockChunk({ familyId: 'family-Y' })], mockClaim, boundary)
-    expect(r.chunks).toHaveLength(0)
+  test('never stores raw prompt/response — only hashes', () => {
+    const b = builder.build({ ...baseCommit, prevBlock: null, blockNumber: 1 })
+    expect(JSON.stringify(b)).not.toContain('AI response text')
   })
 
-  // QA BUG FIX: original used role equality not hierarchy
-  // manager should NOT be denied from ['owner','admin','manager'] docs
-  test('[QA FIX] manager can access docs with allowedRoles [owner, admin, manager]', () => {
-    const chunk = mockChunk({ governance: { status: 'active', allowedRoles: ['owner', 'admin', 'manager'], visibility: 'tenant' } })
-    const r = corpus.filter([chunk], mockClaim, boundary)
-    expect(r.chunks).toHaveLength(1)
+  test('checksum recomputes deterministically (canonical JSON)', () => {
+    const b = builder.build({ ...baseCommit, prevBlock: null, blockNumber: 1 })
+    const verifier = new ChainVerifier(new InMemoryLedgerStore())
+    expect(verifier.recomputeChecksum(b)).toBe(b.auditTrail.currentHash)
   })
 
-  // Correction #1: role authority comes from the DAR boundary, not the claim.
-  // A viewer-authority boundary cannot read manager+ docs.
-  test('[QA FIX] viewer is denied from manager+ docs', () => {
-    const viewerBoundary: EvidenceBoundary = { ...boundary, allowedRoles: ['viewer'] }
-    const r = corpus.filter([mockChunk()], { ...mockClaim, role: 'viewer' }, viewerBoundary)
-    expect(r.chunks).toHaveLength(0)
+  test('authority provenance is bound into the block', () => {
+    const b = builder.build({ ...baseCommit, prevBlock: null, blockNumber: 1 })
+    expect(b.authority?.authoritySnapshotId).toBe('snap-1')
+    expect(b.authority?.policyVersion).toBe('2026.06')
+  })
+})
+
+describe('Layer 5 — EvidenceLedger', () => {
+  let store: InMemoryLedgerStore
+  let ledger: EvidenceLedger
+  beforeEach(() => {
+    store = new InMemoryLedgerStore()
+    ledger = new EvidenceLedger(store)
   })
 
-  test('[QA FIX] owner wildcard family sees all family chunks', () => {
-    const ownerBoundary = { ...boundary, familyIds: ['*'] }
-    const chunk = mockChunk({ familyId: 'family-COMPLETELY-DIFFERENT' })
-    const r = corpus.filter([chunk], { ...mockClaim, role: 'owner' }, ownerBoundary)
-    expect(r.chunks).toHaveLength(1)
+  test('commits a chain and links blocks', async () => {
+    const b1 = await ledger.commit(baseCommit)
+    const b2 = await ledger.commit(baseCommit)
+    expect(b1.blockNumber).toBe(1)
+    expect(b2.blockNumber).toBe(2)
+    expect(b2.auditTrail.previousHash).toBe(b1.auditTrail.currentHash)
   })
 
-  test('filters mixed valid and invalid chunks correctly', () => {
-    const chunks = [
-      mockChunk(),
-      mockChunk({ tenantId: 'tenant-B' }),
-      mockChunk(),
-      mockChunk({ governance: { status: 'quarantined', allowedRoles: ['manager'], visibility: 'tenant' } })
-    ]
-    const r = corpus.filter(chunks, mockClaim, boundary)
-    expect(r.chunks).toHaveLength(2)
-    expect(r.filteredCount).toBe(2)
+  test('verifies an intact chain', async () => {
+    await ledger.commit(baseCommit)
+    await ledger.commit(baseCommit)
+    const r = await ledger.verifyChain('tenant-A', 1, 2)
+    expect(r.valid).toBe(true)
+    expect(r.totalBlocks).toBe(2)
+  })
+
+  test('detects tampering (checksum mismatch)', async () => {
+    await ledger.commit(baseCommit)
+    await ledger.commit(baseCommit)
+    store.tamperBlock('tenant-A', 1, b => { b.decision = 'DENY' })
+    const r = await ledger.verifyChain('tenant-A', 1, 2)
+    expect(r.valid).toBe(false)
+    expect(r.brokenAt).toBe(1)
+  })
+
+  test('verifyFromGenesis proves chain from block 1', async () => {
+    const g = await ledger.commit(baseCommit)
+    await ledger.commit(baseCommit)
+    const ok = await ledger.verifyFromGenesis('tenant-A')
+    expect(ok.valid).toBe(true)
+    const pinned = await ledger.verifyFromGenesis('tenant-A', g.auditTrail.currentHash)
+    expect(pinned.valid).toBe(true)
+    const bad = await ledger.verifyFromGenesis('tenant-A', 'wrong')
+    expect(bad.valid).toBe(false)
+  })
+
+  test('replay surfaces decision + authority provenance', async () => {
+    await ledger.commit(baseCommit)
+    const r = await ledger.replayBlock('tenant-A', 1)
+    expect(r.decision).toBe('ALLOW')
+    expect(r.chainIntegrity).toBe('valid')
+    expect(r.authority?.authoritySnapshotId).toBe('snap-1')
+    expect(r.authority?.policyVersion).toBe('2026.06')
+  })
+
+  test('concurrent commits do not fork the chain', async () => {
+    await Promise.all(Array.from({ length: 10 }, () => ledger.commit(baseCommit)))
+    const r = await ledger.verifyChain('tenant-A', 1, 10)
+    expect(r.valid).toBe(true)
+    expect(r.totalBlocks).toBe(10)
   })
 })

@@ -1,6 +1,6 @@
 import { LedgerStore } from './LedgerStore'
 import { ChainVerifier } from './ChainVerifier'
-import { EvidenceBlock, ReplayResult } from './types'
+import { ReplayResult } from './types'
 
 export class ReplayEngine {
   constructor(private store: LedgerStore, private verifier: ChainVerifier) {}
@@ -12,25 +12,17 @@ export class ReplayEngine {
     }
 
     const recomputed = this.verifier.recomputeChecksum(block)
-    const chainIntegrity = recomputed === block.auditTrail.blockChecksum ? 'valid' : 'broken'
+    const chainIntegrity = recomputed === block.auditTrail.currentHash ? 'valid' : 'broken'
 
     return {
       blockNumber,
-      policyDecision: this.decision(block),
+      decision:           block.decision,
       chainIntegrity,
       recomputedChecksum: recomputed,
-      storedChecksum:     block.auditTrail.blockChecksum,
+      storedChecksum:     block.auditTrail.currentHash,
+      // Surface the authority provenance so the replay proves *why* the decision
+      // was permitted, not merely that the record is intact.
+      authority:          block.authority ?? null,
     }
-  }
-
-  // The recorded policy outcome is recoverable deterministically from the block.
-  private decision(block: EvidenceBlock): 'approved' | 'denied' {
-    const p = block.policyRules
-    const approved =
-      p.retentionCheck === 'passed' &&
-      p.roleCheck === 'passed' &&
-      p.effectiveDateCheck === 'passed' &&
-      p.legalHold === false
-    return approved ? 'approved' : 'denied'
   }
 }

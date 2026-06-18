@@ -47,7 +47,7 @@ export class EvidenceLedger {
     if (prevBlock) {
       await this.store.updateNextHash(
         prevBlock.blockId,
-        newBlock.auditTrail.blockChecksum
+        newBlock.auditTrail.currentHash
       ).catch(err =>
         console.error(`[LEDGER] updateNextHash failed for block ${prevBlock.blockId}:`, err)
       )
@@ -60,6 +60,13 @@ export class EvidenceLedger {
     tenantId: string, from: number, to: number
   ): Promise<ChainVerifyResult> {
     return this.verifier.verify(tenantId, from, to)
+  }
+
+  // Forensic full-chain verification anchored at genesis (no gaps from block 1).
+  async verifyFromGenesis(
+    tenantId: string, expectedGenesisChecksum?: string
+  ): Promise<ChainVerifyResult> {
+    return this.verifier.verifyFromGenesis(tenantId, expectedGenesisChecksum)
   }
 
   async replayBlock(tenantId: string, blockNumber: number): Promise<ReplayResult> {

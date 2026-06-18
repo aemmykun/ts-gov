@@ -1,23 +1,27 @@
 import crypto from 'crypto'
 import { EvidenceBlock } from './types'
 import { TenantClaim }   from '../identity/types'
-import { PolicyCheckResult } from '../policy/types'
 import { HandOffManifest } from '../handoff/types'
 
 export interface BlockInput {
   claim:        TenantClaim
-  policyResult: PolicyCheckResult
-  ruleVersion:  string
-  documentIds:  string[]
-  chunkIds:     string[]
-  contextText:  string
-  aiResponse:   string
-  modelUsed:    string
-  tokenCount:   number
-  queryText:    string
+  requestId:    string
+  decision:     'ALLOW' | 'DENY'
+  // Hash of the DAR decision (resolved boundary) behind this outcome.
+  darDecisionHash: string
+  retrievedEvidenceIds: string[]
+  promptText:   string
+  responseText: string
+  modelUsed?:   string
+  tokenCount?:  number
+  dataJson?:    Record<string, unknown>
   prevBlock:    EvidenceBlock | null
   blockNumber:  number
   handoff?:     HandOffManifest
+  // Replay provenance (audit-grade). Bound into the block checksum.
+  authoritySnapshotId?: string
+  policyVersion?:       string
+  boundaryHash?:        string
 }
 
 export class BlockBuilder {
@@ -29,66 +33,73 @@ export class BlockBuilder {
       userId:     input.claim.userId,
       tenantId:   input.claim.tenantId,
       provider:   input.claim.provider,
-      verifiedAt: input.claim.verifiedAt
+      verifiedAt: input.claim.verifiedAt,
     }
 
-    const policyRules: EvidenceBlock['policyRules'] = {
-      ruleVersion:        input.ruleVersion,
-      retentionCheck:     input.policyResult.failedAt === 'retention'       ? 'failed' : 'passed',
-      legalHold:          input.policyResult.failedAt === 'legal_hold',
-      roleCheck:          input.policyResult.failedAt === 'role_permission'  ? 'failed' : 'passed',
-      effectiveDateCheck: input.policyResult.failedAt === 'effective_date'   ? 'failed' : 'passed'
-    }
+    const promptHash   = input.promptText   ? this.sha256(input.promptText)   : null
+    const responseHash = input.responseText ? this.sha256(input.responseText) : null
 
-    const contextRetrieved: EvidenceBlock['contextRetrieved'] = {
-      documentIds:    input.documentIds,
-      chunkIds:       input.chunkIds,
-      provenanceHash: this.sha256(input.contextText)
-    }
+    const aiOutput: EvidenceBlock['aiOutput'] =
+      input.modelUsed !== undefined || input.tokenCount !== undefined
+        ? { modelUsed: input.modelUsed ?? '', tokenCount: input.tokenCount ?? 0 }
+        : null
 
-    const aiOutput: EvidenceBlock['aiOutput'] = {
-      responseHash: this.sha256(input.aiResponse),  // QA: never store raw response
-      modelUsed:    input.modelUsed,
-      tokenCount:   input.tokenCount
-    }
+    const authority: EvidenceBlock['authority'] =
+      input.authoritySnapshotId || input.policyVersion || input.boundaryHash
+        ? {
+            authoritySnapshotId: input.authoritySnapshotId ?? '',
+            policyVersion:       input.policyVersion ?? '',
+            boundaryHash:        input.boundaryHash ?? '',
+          }
+        : null
 
-    const prevBlockHash = input.prevBlock
-      ? input.prevBlock.auditTrail.blockChecksum
+    const previousHash = input.prevBlock
+      ? input.prevBlock.auditTrail.currentHash
       : 'GENESIS'
 
-    const queryHash = this.sha256(input.queryText)
+    const handoff  = input.handoff ?? null
+    const dataJson = input.dataJson ?? {}
 
-    const handoff = input.handoff ?? null
-
-    // QA FIX 1: Canonical JSON for checksum — sort keys so order doesn't affect hash
-    // Original used JSON.stringify with arbitrary key order — unstable across JS engines
-    const blockChecksum = this.sha256(this.canonicalJson({
+    // Canonical JSON for the checksum — keys sorted so order never affects the hash.
+    const currentHash = this.sha256(this.canonicalJson({
       blockId,
+      requestId:   input.requestId,
       blockNumber: input.blockNumber,
+      tenantId:    input.claim.tenantId,
       createdAt,
+      decision:        input.decision,
+      darDecisionHash: input.darDecisionHash,
       userIdentity,
-      policyRules,
-      contextRetrieved,
+      retrievedEvidenceIds: input.retrievedEvidenceIds,
+      promptHash,
+      responseHash,
       aiOutput,
-      handoff,        // bound into the checksum so custody metadata is tamper-evident
-      queryHash,
-      prevBlockHash
+      handoff,     // custody metadata bound into the checksum
+      authority,   // replay provenance bound into the checksum
+      dataJson,
+      previousHash,
     }))
 
     const block: EvidenceBlock = {
       blockId,
+      requestId:   input.requestId,
       blockNumber: input.blockNumber,
+      tenantId:    input.claim.tenantId,
       createdAt,
+      decision:        input.decision,
+      darDecisionHash: input.darDecisionHash,
       userIdentity,
-      policyRules,
-      contextRetrieved,
+      retrievedEvidenceIds: input.retrievedEvidenceIds,
+      promptHash,
+      responseHash,
       aiOutput,
+      authority,
+      dataJson,
       auditTrail: {
-        queryHash,
-        prevBlockHash,
-        nextBlockHash: null,
-        blockChecksum
-      }
+        previousHash,
+        currentHash,
+        nextHash: null,
+      },
     }
 
     if (input.handoff) block.handoff = input.handoff
@@ -96,7 +107,7 @@ export class BlockBuilder {
     return block
   }
 
-  // QA FIX 2: Stable canonical JSON — sorts all keys recursively
+  // Stable canonical JSON — sorts all keys recursively.
   canonicalJson(obj: unknown): string {
     if (Array.isArray(obj)) {
       return '[' + obj.map(v => this.canonicalJson(v)).join(',') + ']'

@@ -1,14 +1,24 @@
-// Canonical role hierarchy. Single source of truth for every authority decision.
-// Unknown roles resolve to level 0 (denied) — fail-closed by construction.
+// Canonical role hierarchy (matches the SQL `role` check constraint).
+// Single source of truth for role ordering. Unknown roles resolve to level 0
+// (denied) — fail-closed by construction.
+//
+// NOTE: in the canonical (topic-based) model a role does NOT by itself grant
+// access to evidence. A role is the key used to look up its `allowed_topics` in
+// the `policies` table. The level ordering below is only used for coarse
+// privilege comparisons (e.g. "manager and above"), never for evidence
+// authorisation — that is always topic + scope based.
 
-export type Role = 'owner' | 'admin' | 'manager' | 'member' | 'viewer'
+export type Role = 'staff' | 'supervisor' | 'manager' | 'admin'
 
 const ROLE_LEVELS: Record<Role, number> = {
-  viewer:  1,
-  member:  2,
-  manager: 3,
-  admin:   4,
-  owner:   5,
+  staff:      1,
+  supervisor: 2,
+  manager:    3,
+  admin:      4,
+}
+
+export function isRole(v: unknown): v is Role {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(ROLE_LEVELS, v)
 }
 
 export function roleLevel(role: string | undefined | null): number {
@@ -16,19 +26,10 @@ export function roleLevel(role: string | undefined | null): number {
   return ROLE_LEVELS[role as Role] ?? 0
 }
 
-// Lowest privilege level that satisfies a set of allowed roles.
-// Empty / all-unknown sets return Infinity so callers fail closed.
-export function requiredLevel(allowedRoles: readonly string[]): number {
-  const levels = allowedRoles.map(roleLevel).filter(l => l > 0)
-  if (levels.length === 0) return Infinity
-  return Math.min(...levels)
-}
-
-// A subject role satisfies the requirement when its level meets the lowest
-// allowed level. Owner is an explicit superuser short-circuit.
-export function roleSatisfies(subjectRole: string, allowedRoles: readonly string[]): boolean {
-  if (subjectRole === 'owner') return true
+// True when `subjectRole` is at or above `minRole` in the hierarchy. Unknown
+// subject roles always fail closed.
+export function roleAtLeast(subjectRole: string, minRole: Role): boolean {
   const subject = roleLevel(subjectRole)
   if (subject === 0) return false
-  return subject >= requiredLevel(allowedRoles)
+  return subject >= roleLevel(minRole)
 }
