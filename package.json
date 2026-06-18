@@ -1,0 +1,25 @@
+{
+  "name": "tenantsage",
+  "version": "4.1.0",
+  "description": "TenantSage — Governance-First AI Retrieval Architecture. No Authority. No Evidence. No Generation.",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "jest",
+    "test:coverage": "jest --coverage"
+  },
+  "dependencies": {
+    "jsonwebtoken": "9.0.2",
+    "jwks-rsa": "3.1.0"
+  },
+  "devDependencies": {
+    "@types/jest": "29.5.12",
+    "@types/jsonwebtoken": "9.0.6",
+    "@types/node": "20.14.9",
+    "jest": "29.7.0",
+    "ts-jest": "29.1.5",
+    "typescript": "5.4.5"
+  }
+}
