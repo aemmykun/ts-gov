@@ -10,6 +10,7 @@ export { InMemoryAssignmentResolver } from './assignments/InMemoryAssignmentReso
 
 // Policy (corrections #2/#3 inputs)
 export * from './policy/types'
+export * from './policy/classification'
 export { PolicyEngine } from './policy/PolicyEngine'
 export { AuditLockService } from './policy/AuditLockService'
 export { RetentionCheck } from './policy/checks/RetentionCheck'

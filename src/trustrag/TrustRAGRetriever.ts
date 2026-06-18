@@ -30,12 +30,15 @@ export class TrustRAGRetriever {
   compilePredicate(boundary: EvidenceBoundary): RetrievalPredicate {
     const denyAll = Boolean(boundary.empty) || boundary.tenantIds.length === 0
     return {
-      tenantIds:         [...boundary.tenantIds],
-      familyIds:         [...boundary.familyIds],
-      allowedStatuses:   [...boundary.allowedStatuses],
-      allowedRoleNames:  [...boundary.allowedRoles],
-      maxClassification: boundary.maxClassification,
-      maxSensitivity:    boundary.maxSensitivity,
+      tenantIds:           [...boundary.tenantIds],
+      organisationIds:     [...boundary.organisationIds],
+      scopeIds:            [...boundary.scopeIds],
+      familyIds:           [...boundary.familyIds],
+      allFamilies:         boundary.allFamilies,
+      allowedStatuses:     [...boundary.allowedStatuses],
+      allowedRoleNames:    [...boundary.allowedRoles],
+      classificationLevel: boundary.classificationLevel,
+      sensitivityLevel:    boundary.sensitivityLevel,
       denyAll,
     }
   }

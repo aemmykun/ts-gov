@@ -15,9 +15,9 @@ const claim: TenantClaim = {
 }
 
 const corpus: GovernedChunk[] = [
-  { chunkId: 'c1', sourceId: 's1', tenantId: 'tenant-A', familyId: 'family-X', content: 'allowed',
+  { chunkId: 'c1', sourceId: 's1', tenantId: 'tenant-A', organisationId: 'org-1', familyId: 'family-X', content: 'allowed',
     governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant' } },
-  { chunkId: 'c2', sourceId: 's2', tenantId: 'tenant-B', familyId: 'family-X', content: 'cross-tenant',
+  { chunkId: 'c2', sourceId: 's2', tenantId: 'tenant-B', organisationId: 'org-1', familyId: 'family-X', content: 'cross-tenant',
     governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant' } },
 ]
 
@@ -44,8 +44,11 @@ function buildPipeline(resolver: InMemoryAssignmentResolver) {
 describe('Canonical runtime flow (Identity → DAR → TrustRAG → Corpus → Generation → Ledger)', () => {
   test('authorised manager retrieves only in-boundary evidence and a ledger block is written', async () => {
     const resolver = new InMemoryAssignmentResolver().grant({
-      userId: 'user-001', tenantId: 'tenant-A', familyIds: ['family-X'], scopeIds: [],
-      role: 'manager', source: 'test', assignedAt: new Date().toISOString(),
+      assignmentId: 'asg-001', assignmentVersion: 'v1',
+      userId: 'user-001', tenantId: 'tenant-A',
+      organisationIds: ['org-1'], scopeIds: [], familyIds: ['family-X'],
+      role: 'manager', classificationClearance: 'restricted', sensitivityClearance: 'critical',
+      source: 'test', assignedAt: new Date().toISOString(),
     })
     const { pipeline, store } = buildPipeline(resolver)
 

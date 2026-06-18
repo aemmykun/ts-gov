@@ -26,9 +26,13 @@ const claim: TenantClaim = {
 }
 
 const managerBoundary: EvidenceBoundary = {
-  tenantIds: ['tenant-A'], familyIds: ['family-X'],
+  tenantIds: ['tenant-A'], organisationIds: [], scopeIds: [],
+  familyIds: ['family-X'], allFamilies: false,
   allowedStatuses: ['active'], allowedRoles: ['manager'],
+  classificationLevel: 'restricted', sensitivityLevel: 'critical',
+  authoritySnapshotId: 'asg-001@v1', policyVersion: '4.2.0',
   effectiveAt: new Date().toISOString(), computedAt: new Date().toISOString(),
+  empty: false,
 }
 
 const chunk = (overrides: Partial<GovernedChunk> = {}): GovernedChunk => ({
@@ -108,19 +112,39 @@ describe('Correction #3 — expanded corpus enforcement', () => {
   })
 
   test('enforces classification ceiling', () => {
-    const b: EvidenceBoundary = { ...managerBoundary, maxClassification: 'internal' }
+    const b: EvidenceBoundary = { ...managerBoundary, classificationLevel: 'internal' }
     const r = run(chunk({ governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant', classification: 'restricted' } }), b)
     expect(r.removed[0].reason).toBe('classification-exceeds-boundary')
   })
 
+  test('classification comparison is case-insensitive (enum-normalized)', () => {
+    const b: EvidenceBoundary = { ...managerBoundary, classificationLevel: 'confidential' }
+    // 'CONFIDENTIAL' must be treated as 'confidential', not as an unknown value.
+    const r = run(chunk({ governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant', classification: 'CONFIDENTIAL' as never } }), b)
+    expect(r.chunks).toHaveLength(1)
+  })
+
   test('enforces sensitivity ceiling', () => {
-    const b: EvidenceBoundary = { ...managerBoundary, maxSensitivity: 'low' }
+    const b: EvidenceBoundary = { ...managerBoundary, sensitivityLevel: 'low' }
     const r = run(chunk({ governance: { status: 'active', allowedRoles: ['manager'], visibility: 'tenant', sensitivity: 'critical' } }), b)
     expect(r.removed[0].reason).toBe('sensitivity-exceeds-boundary')
   })
 
+  test('enforces organisation boundary', () => {
+    const b: EvidenceBoundary = { ...managerBoundary, organisationIds: ['org-1'] }
+    const r = run(chunk({ organisationId: 'org-2' }), b)
+    expect(r.removed[0].reason).toBe('organisation-mismatch')
+  })
+
+  test('enforces scope boundary', () => {
+    const b: EvidenceBoundary = { ...managerBoundary, scopeIds: ['scope-1'] }
+    const r = run(chunk({ scopeId: 'scope-9' }), b)
+    expect(r.removed[0].reason).toBe('scope-mismatch')
+  })
+
   test('strict mode rejects chunk missing required governance metadata', () => {
-    const r = run(chunk(), managerBoundary, { strict: true })
+    // org/scope present so the first missing dimension surfaced is retention.
+    const r = run(chunk({ organisationId: 'org-1', scopeId: 'scope-1' }), managerBoundary, { strict: true })
     expect(r.chunks).toHaveLength(0)
     expect(r.removed[0].reason).toBe('retention-missing')
   })
@@ -200,7 +224,7 @@ describe('Correction #5 — TrustRAG governed retrieval', () => {
       // A compliant index honours the predicate.
       return this.corpus.filter(c =>
         query.predicate.tenantIds.includes(c.tenantId) &&
-        (query.predicate.familyIds.includes('*') || query.predicate.familyIds.includes(c.familyId)),
+        (query.predicate.allFamilies || query.predicate.familyIds.includes(c.familyId)),
       )
     }
   }
@@ -233,5 +257,45 @@ describe('Correction #5 — TrustRAG governed retrieval', () => {
     expect(index.lastQuery?.predicate.tenantIds).toEqual(['tenant-A'])
     expect(r.chunks).toHaveLength(1)
     expect(r.chunks[0].chunkId).toBe('c1')
+  })
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gaps 1/3/4 — organisation/scope boundaries + audit-grade replay provenance
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('DAR audit-grade boundary (org/scope + snapshot + policy version)', () => {
+  const resolver = new InMemoryAssignmentResolver().grant({
+    assignmentId: 'asg-77', assignmentVersion: 'v3',
+    userId: 'user-001', tenantId: 'tenant-A',
+    organisationIds: ['org-1', 'org-2'], scopeIds: ['scope-9'], familyIds: ['family-X'],
+    role: 'manager', classificationClearance: 'confidential', sensitivityClearance: 'high',
+    source: 'scim', assignedAt: new Date().toISOString(),
+  })
+  const dar = new DAREngine(resolver, { policyVersion: '4.2.0' })
+
+  test('boundary carries organisation and scope membership from the assignment', async () => {
+    const b = await dar.resolve(claim)
+    expect(b.organisationIds).toEqual(['org-1', 'org-2'])
+    expect(b.scopeIds).toEqual(['scope-9'])
+  })
+
+  test('boundary clearance ceilings come from the assignment (not the claim)', async () => {
+    const b = await dar.resolve(claim)
+    expect(b.classificationLevel).toBe('confidential')
+    expect(b.sensitivityLevel).toBe('high')
+  })
+
+  test('boundary is replayable: authoritySnapshotId + policyVersion are stamped', async () => {
+    const b = await dar.resolve(claim)
+    expect(b.authoritySnapshotId).toBe('asg-77@v3')
+    expect(b.policyVersion).toBe('4.2.0')
+  })
+
+  test('empty boundary still records the policy version for audit', async () => {
+    const b = await new DAREngine(new InMemoryAssignmentResolver(), { policyVersion: '4.2.0' }).resolve(claim)
+    expect(b.empty).toBe(true)
+    expect(b.authoritySnapshotId).toBe('none')
+    expect(b.policyVersion).toBe('4.2.0')
   })
 })

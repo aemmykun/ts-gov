@@ -486,12 +486,17 @@ describe('Layer 5 — DAREngine', () => {
   // from the JWT claim. Each test seeds the assignment store with the role
   // under test; the claim only supplies identity (userId/tenantId).
   const baseAssignment: Omit<UserAssignment, 'role'> = {
-    userId:     'user-001',
-    tenantId:   'tenant-A',
-    familyIds:  ['family-X'],
-    scopeIds:   [],
-    source:     'test',
-    assignedAt: new Date().toISOString(),
+    assignmentId:      'asg-001',
+    assignmentVersion: 'v1',
+    userId:            'user-001',
+    tenantId:          'tenant-A',
+    organisationIds:   ['org-1'],
+    scopeIds:          [],
+    familyIds:         ['family-X'],
+    classificationClearance: 'restricted',
+    sensitivityClearance:    'critical',
+    source:            'test',
+    assignedAt:        new Date().toISOString(),
   }
 
   const darFor = (role: Role): DAREngine =>
@@ -499,12 +504,12 @@ describe('Layer 5 — DAREngine', () => {
 
   test('owner gets wildcard family access', async () => {
     const b = await darFor('owner').resolve(mockClaim)
-    expect(b.familyIds).toContain('*')
+    expect(b.allFamilies).toBe(true)
   })
 
   test('admin does NOT get wildcard family (own family only)', async () => {
     const b = await darFor('admin').resolve(mockClaim)
-    expect(b.familyIds).not.toContain('*')
+    expect(b.allFamilies).toBe(false)
     expect(b.familyIds).toContain('family-X')
   })
 
@@ -559,12 +564,20 @@ describe('Layer 5 — DAREngine', () => {
 describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   const corpus   = new ApprovedEvidenceCorpus()
   const boundary: EvidenceBoundary = {
-    tenantIds:       ['tenant-A'],
-    familyIds:       ['family-X'],
-    allowedStatuses: ['active'],
-    allowedRoles:    ['manager'],
-    effectiveAt:     new Date().toISOString(),
-    computedAt:      new Date().toISOString()
+    tenantIds:           ['tenant-A'],
+    organisationIds:     [],
+    scopeIds:            [],
+    familyIds:           ['family-X'],
+    allFamilies:         false,
+    allowedStatuses:     ['active'],
+    allowedRoles:        ['manager'],
+    classificationLevel: 'restricted',
+    sensitivityLevel:    'critical',
+    authoritySnapshotId: 'asg-001@v1',
+    policyVersion:       '4.2.0',
+    effectiveAt:         new Date().toISOString(),
+    computedAt:          new Date().toISOString(),
+    empty:               false,
   }
 
   test('approves valid chunk', () => {
@@ -609,7 +622,7 @@ describe('Layer 5 — ApprovedEvidenceCorpus (Ghost Effect)', () => {
   })
 
   test('[QA FIX] owner wildcard family sees all family chunks', () => {
-    const ownerBoundary = { ...boundary, familyIds: ['*'] }
+    const ownerBoundary: EvidenceBoundary = { ...boundary, allFamilies: true, familyIds: [] }
     const chunk = mockChunk({ familyId: 'family-COMPLETELY-DIFFERENT' })
     const r = corpus.filter([chunk], { ...mockClaim, role: 'owner' }, ownerBoundary)
     expect(r.chunks).toHaveLength(1)

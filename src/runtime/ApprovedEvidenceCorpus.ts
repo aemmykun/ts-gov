@@ -1,6 +1,9 @@
 import { TenantClaim } from '../identity/types'
 import { Role, roleLevel, roleSatisfies } from '../identity/roles'
 import { DocumentStatus } from '../policy/types'
+import {
+  Classification, Sensitivity, classificationWithin, sensitivityWithin,
+} from '../policy/classification'
 import { EvidenceBoundary } from '../dar/types'
 
 export type Visibility = 'private' | 'family' | 'tenant' | 'public'
@@ -14,18 +17,20 @@ export interface ChunkGovernance {
   retainUntil?:   string | Date
   effectiveFrom?: string | Date
   effectiveTo?:   string | Date
-  classification?: string
-  sensitivity?:    string
+  classification?: Classification
+  sensitivity?:    Sensitivity
   lifecycle?:      'active' | 'superseded' | 'retired' | 'draft'
 }
 
 export interface GovernedChunk {
-  chunkId:    string
-  sourceId:   string
-  tenantId:   string
-  familyId:   string
-  content:    string
-  governance: ChunkGovernance
+  chunkId:         string
+  sourceId:        string
+  tenantId:        string
+  organisationId?: string
+  scopeId?:        string
+  familyId:        string
+  content:         string
+  governance:      ChunkGovernance
 }
 
 export interface FilterOptions {
@@ -44,17 +49,6 @@ export interface CorpusResult {
   chunks:        GovernedChunk[]
   filteredCount: number
   removed:       RemovedChunk[]
-}
-
-// Ordered classification / sensitivity tiers (low → high). Unknown tiers are
-// treated as maximally sensitive (fail-closed).
-const CLASSIFICATION_ORDER = ['public', 'internal', 'confidential', 'restricted']
-const SENSITIVITY_ORDER    = ['low', 'medium', 'high', 'critical']
-
-function tierIndex(order: string[], value: string | undefined): number {
-  if (!value) return order.length // unknown ⇒ most sensitive
-  const i = order.indexOf(value.toLowerCase())
-  return i === -1 ? order.length : i
 }
 
 function toDate(v: string | Date | undefined): Date | null {
@@ -120,8 +114,24 @@ export class ApprovedEvidenceCorpus {
     // Tenant isolation.
     if (!boundary.tenantIds.includes(chunk.tenantId)) return 'tenant-mismatch'
 
-    // Family / scope membership (wildcard for owners).
-    if (!boundary.familyIds.includes('*') && !boundary.familyIds.includes(chunk.familyId)) {
+    // Organisation membership (enforced when the boundary scopes organisations).
+    if (boundary.organisationIds.length > 0) {
+      if (chunk.organisationId === undefined) return 'organisation-missing'
+      if (!boundary.organisationIds.includes(chunk.organisationId)) return 'organisation-mismatch'
+    } else if (strict && chunk.organisationId === undefined) {
+      return 'organisation-missing'
+    }
+
+    // Scope membership (enforced when the boundary scopes scopes).
+    if (boundary.scopeIds.length > 0) {
+      if (chunk.scopeId === undefined) return 'scope-missing'
+      if (!boundary.scopeIds.includes(chunk.scopeId)) return 'scope-mismatch'
+    } else if (strict && chunk.scopeId === undefined) {
+      return 'scope-missing'
+    }
+
+    // Family / scope membership (tenant-wide for owners via allFamilies).
+    if (!boundary.allFamilies && !boundary.familyIds.includes(chunk.familyId)) {
       return 'family-mismatch'
     }
 
@@ -158,25 +168,28 @@ export class ApprovedEvidenceCorpus {
     // Lifecycle (when present) must be an active state.
     if (g.lifecycle !== undefined && g.lifecycle !== 'active') return 'lifecycle-inactive'
 
-    // Classification / sensitivity ceilings (when the boundary defines them).
-    if (boundary.maxClassification) {
-      if (tierIndex(CLASSIFICATION_ORDER, g.classification) >
-          tierIndex(CLASSIFICATION_ORDER, boundary.maxClassification)) {
-        return 'classification-exceeds-boundary'
-      }
-    } else if (strict && g.classification === undefined) {
-      return 'classification-missing'
+    // Classification ceiling.
+    if (this.classifiedAbove(g.classification, boundary.classificationLevel, strict)) {
+      return 'classification-exceeds-boundary'
     }
 
-    if (boundary.maxSensitivity) {
-      if (tierIndex(SENSITIVITY_ORDER, g.sensitivity) >
-          tierIndex(SENSITIVITY_ORDER, boundary.maxSensitivity)) {
-        return 'sensitivity-exceeds-boundary'
-      }
-    } else if (strict && g.sensitivity === undefined) {
-      return 'sensitivity-missing'
+    // Sensitivity ceiling.
+    if (this.sensitiveAbove(g.sensitivity, boundary.sensitivityLevel, strict)) {
+      return 'sensitivity-exceeds-boundary'
     }
 
     return null
+  }
+
+  // Absent metadata is allowed in lenient mode (backward compatible) but rejected
+  // in strict mode (correction #2). Present values are tier-compared.
+  private classifiedAbove(value: Classification | undefined, ceiling: Classification, strict: boolean): boolean {
+    if (value === undefined) return strict
+    return !classificationWithin(value, ceiling)
+  }
+
+  private sensitiveAbove(value: Sensitivity | undefined, ceiling: Sensitivity, strict: boolean): boolean {
+    if (value === undefined) return strict
+    return !sensitivityWithin(value, ceiling)
   }
 }

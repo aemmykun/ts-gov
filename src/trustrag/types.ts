@@ -1,16 +1,20 @@
 import { GovernedChunk } from '../runtime/ApprovedEvidenceCorpus'
 import { DocumentStatus } from '../policy/types'
+import { Classification, Sensitivity } from '../policy/classification'
 
 // Deterministic predicate compiled from an EvidenceBoundary. Correction #5:
 // retrieval is constrained by these predicates — there is no unrestricted
 // vector search.
 export interface RetrievalPredicate {
   tenantIds:        string[]
-  familyIds:        string[]        // ['*'] ⇒ all families within tenant
+  organisationIds:  string[]
+  scopeIds:         string[]
+  familyIds:        string[]
+  allFamilies:      boolean          // tenant-wide family access
   allowedStatuses:  DocumentStatus[]
   allowedRoleNames: string[]
-  maxClassification?: string
-  maxSensitivity?:    string
+  classificationLevel: Classification
+  sensitivityLevel:    Sensitivity
   // When true the predicate authorises no retrieval and the index must refuse.
   denyAll:          boolean
 }

@@ -5,7 +5,7 @@
 
 This repository is the canonical TenantSage reference implementation, revised to
 close the governance-model gaps identified in architecture review. It is a
-buildable, fully tested TypeScript project (91 tests).
+buildable, fully tested TypeScript project (98 tests).
 
 ## Canonical runtime flow
 
@@ -38,6 +38,33 @@ The whole flow is wired in [`src/TenantSagePipeline.ts`](src/TenantSagePipeline.
 | 3 | **ApprovedEvidenceCorpus enforces the full governance set** — tenant, family, lifecycle status, role hierarchy, **legal hold, retention expiry, effective-date window, classification, sensitivity**. Optional `strict` mode rejects chunks missing required metadata. | `src/runtime/ApprovedEvidenceCorpus.ts` |
 | 4 | **HandOff evidence integrity** beyond a checksum: **source hash, chunk hash, signed manifest (HMAC), ingestion audit record, chain-of-custody**. The manifest is bound into the ledger block checksum. | `src/handoff/*`, `src/ledger/BlockBuilder.ts` |
 | 5 | **Fail-closed retrieval.** The DAR boundary is compiled into a deterministic `RetrievalPredicate`. An empty boundary refuses retrieval *before the index is queried*; the index only exposes a predicate-scoped `searchWithin` — there is no unrestricted vector search. | `src/trustrag/*` |
+
+## Audit-grade evidence boundary
+
+Follow-up review hardened the `EvidenceBoundary` from access-control-grade to
+audit-grade:
+
+- **Organisation & scope dimensions** — `organisationIds` / `scopeIds` flow
+  `tenant → organisation → scope → family` from the assignment, and are enforced
+  in the corpus and retrieval predicate.
+- **Classification & sensitivity are closed enums** (`Classification`,
+  `Sensitivity`) with tier-ordered, case-insensitive comparison — no free text.
+- **Replayable** — every boundary carries `authoritySnapshotId`
+  (`assignmentId@assignmentVersion`) and `policyVersion`, so any historical DAR
+  decision can prove which assignment set and which policy produced it.
+- **No magic strings** — owner tenant-wide access is an explicit
+  `allFamilies: boolean`, never `familyId === '*'`.
+
+```ts
+interface EvidenceBoundary {
+  tenantIds: string[]; organisationIds: string[]; scopeIds: string[]
+  familyIds: string[]; allFamilies: boolean
+  allowedStatuses: DocumentStatus[]; allowedRoles: Role[]
+  classificationLevel: Classification; sensitivityLevel: Sensitivity
+  authoritySnapshotId: string; policyVersion: string
+  effectiveAt: string; computedAt: string; empty: boolean
+}
+```
 
 ## Layers
 
